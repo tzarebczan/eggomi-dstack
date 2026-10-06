@@ -86,10 +86,12 @@ challenge the guard issued. The keeper's `expires_mono` is not that check.
 ## Consumption survives reload
 
 Consumption and bootstrap-token use are appended to
-`authority/authority-journal.jsonl`. The keeper epoch lives beside that
-journal, not only inside `grants.json`. Restoring an older grant snapshot, or
-a scope file that still says `used: false`, does not revive a journaled
-grant or token.
+`host-fence/authority-journal.jsonl`, a sibling of `authority/` and outside
+the tree an adapter restores. The keeper epoch lives beside that journal in
+`host-fence/keeper-epoch`, not only inside `grants.json`. Restoring
+`authority/` (an older grant snapshot, or a scope file that still says
+`used: false`) therefore does not revive a journaled grant or token, and
+cannot roll the epoch back.
 
 Issue is journaled with its operation id before the grant is saved. One
 operation id yields one grant, so a restored `grants.json` cannot be used to

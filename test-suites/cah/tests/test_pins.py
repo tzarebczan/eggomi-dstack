@@ -100,6 +100,9 @@ class PinTests(unittest.TestCase):
         self.assertNotIn("cert-only rebind is still", note)
         self.assertNotIn("partly met", note)
         self.assertIn("whether or not the row already has a pid", note)
+        # The journal is outside the restorable authority tree (host_fence_paths).
+        self.assertNotIn("`authority/authority-journal.jsonl`", note)
+        self.assertIn("`host-fence/authority-journal.jsonl`", note)
         manifest = (REPO / "docs/cah/integration-manifest.md").read_text(
             encoding="utf-8"
         )
