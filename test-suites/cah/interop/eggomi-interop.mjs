@@ -58,9 +58,9 @@ const ROWS = [
   {
     role: "browser-guard",
     instance_id: 'inst-é "\\\n\u0001\u{1F600}',
-    boot_id: "boot-\ud800-lone",
+    boot_id: "boot-\u0000\u001f-ctl",
     boot_generation: 1,
-    boot_history: ["boot-\ud800-lone"],
+    boot_history: ["boot-\u0000\u001f-ctl"],
     channel_public: null,
     cert_fingerprint: "fp-\u007f/\t",
     pid: null,
