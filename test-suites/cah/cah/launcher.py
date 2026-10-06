@@ -15,6 +15,14 @@ compartment and outside ``authority/``. Readers are configured with the
 32-byte public key. The registry never names it. A process that signs rows
 trusts its own key. Every other process is given the key on its command
 line (``--launcher-public``).
+
+The launcher also remembers each key's first owner. A channel key or a
+certificate fingerprint, once signed for one instance and role, is never
+signed for another, even after the first row is gone. That memory is
+``key-owners.jsonl`` in the launcher directory: append-only, each line
+fsynced before the registry that uses it is written, outside ``authority/``
+and outside the registry, so neither a restored ``authority/`` nor a
+rewritten registry clears it.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -23,12 +31,14 @@ line (``--launcher-public``).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+from contextlib import contextmanager
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -45,6 +55,7 @@ from cryptography.hazmat.primitives.serialization import (
 ROW_DOMAIN = "eggomi/admission-row/v1\n"
 LAUNCHER_DIR = "launcher"
 SIGNING_KEY = "row-signing.key"
+KEY_OWNERS = "key-owners.jsonl"
 _HEX32 = re.compile(r"^[0-9a-f]{64}$")
 _SIG = re.compile(r"^[0-9a-f]{128}$")
 _SURROGATE = re.compile("[\ud800-\udfff]")
@@ -56,6 +67,19 @@ _trusted_lock = threading.Lock()
 
 class RowNotSignable(ValueError):
     """A row is malformed, so the launcher does not sign it."""
+
+
+class KeyAlreadyBound(RowNotSignable):
+    """A row's key or fingerprint belongs to another instance or role."""
+
+    def __init__(self, key: str, first_owner: str, claimant: str) -> None:
+        """Name the key and both owners."""
+        super().__init__(
+            f"{key.split(':', 1)[0]} key is bound to {first_owner}, not {claimant}"
+        )
+        self.key = key
+        self.first_owner = first_owner
+        self.claimant = claimant
 
 
 def launcher_dir(registry_path: Path) -> Path:
@@ -197,6 +221,93 @@ class LauncherSigner:
         """Return ``launcher_sig`` for ``row`` after checking it is well formed."""
         require_signable(trust_domain, tenant, row)
         return self._private.sign(row_message(trust_domain, tenant, row)).hex()
+
+
+def possession_keys(row: Mapping[str, Any]) -> List[str]:
+    """Return the row's channel key and fingerprint in one namespace."""
+    keys: List[str] = []
+    channel = row.get("channel_public")
+    if isinstance(channel, str) and channel:
+        keys.append(f"ch:{channel}")
+    fingerprint = row.get("cert_fingerprint")
+    if isinstance(fingerprint, str) and fingerprint:
+        keys.append(f"fp:{fingerprint}")
+    return keys
+
+
+def owner_of(row: Mapping[str, Any]) -> str:
+    """Return the owner a key binds to: ``[instance_id, role]`` as JSON."""
+    return js_json([str(row.get("instance_id")), str(row.get("role"))])
+
+
+class KeyOwners:
+    """The launcher's durable first-owner memory for keys and fingerprints."""
+
+    def __init__(self, directory: Path) -> None:
+        """Use ``directory/key-owners.jsonl``."""
+        self.path = directory / KEY_OWNERS
+
+    def owners(self) -> Dict[str, str]:
+        """Return each key's first owner. A corrupt line raises."""
+        if not self.path.exists():
+            return {}
+        owners: Dict[str, str] = {}
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            key = entry.get("key") if isinstance(entry, dict) else None
+            owner = entry.get("owner") if isinstance(entry, dict) else None
+            if not isinstance(key, str) or not isinstance(owner, str):
+                raise ValueError("key owner journal row is malformed")
+            owners.setdefault(key, owner)
+        return owners
+
+    def claim(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        """Record new keys for ``rows``, or raise ``KeyAlreadyBound``.
+
+        Every row is checked before anything is recorded, so a refused save
+        records nothing. New owners are fsynced before this returns, which is
+        before the caller writes a registry that names them.
+        """
+        with self._locked():
+            owners = self.owners()
+            fresh: Dict[str, str] = {}
+            for row in rows:
+                claimant = owner_of(row)
+                for key in possession_keys(row):
+                    first = owners.get(key, fresh.get(key))
+                    if first is None:
+                        fresh[key] = claimant
+                    elif first != claimant:
+                        raise KeyAlreadyBound(key, first, claimant)
+            if fresh:
+                self._append(fresh)
+
+    def _append(self, fresh: Mapping[str, str]) -> None:
+        created = not self.path.exists()
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            for key, owner in fresh.items():
+                line = json.dumps({"key": key, "owner": owner}, sort_keys=True) + "\n"
+                os.write(fd, line.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if created:
+            fsync_dir(self.path.parent)
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        handle = self.path.with_name(self.path.name + ".lock").open("a")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
 
 def trust_launcher_key(public: bytes) -> None:

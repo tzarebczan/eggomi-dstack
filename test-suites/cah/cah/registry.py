@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
-from .launcher import LauncherSigner, launcher_dir, row_attributed
+from .launcher import KeyOwners, LauncherSigner, launcher_dir, row_attributed
 
 
 class BootRollback(ValueError):
@@ -81,15 +81,22 @@ class AdmissionRegistry:
     def attributed(self) -> List[Dict[str, object]]:
         """Return the rows whose ``launcher_sig`` verifies.
 
-        Lookups only see these rows. The raw ``workloads`` list is the
-        launcher's own view, used when it rewrites the file.
+        Lookups only see these rows. An instance, channel key or
+        fingerprint that two attributed rows claim is no identity for
+        either, as in Eggomi's ``readRegistry``. The raw ``workloads`` list
+        is the launcher's own view, used when it rewrites the file.
         """
-        return [
+        rows = [
             row
             for row in self.workloads
             if isinstance(row, dict)
             and row_attributed(self.trust_domain, self.tenant, row)
         ]
+        counts: Dict[str, int] = {}
+        for row in rows:
+            for claim in _claims(row):
+                counts[claim] = counts.get(claim, 0) + 1
+        return [row for row in rows if all(counts[c] == 1 for c in _claims(row))]
 
     def find_pid(self, pid: int) -> Optional[WorkloadIdentity]:
         """Return the workload bound to this pid and its current start time.
@@ -322,7 +329,9 @@ def save_registry(
     ``launcher_dir(path)``. A malformed row raises ``RowNotSignable`` and
     nothing is written. A channel public key that changes from one non-empty
     value to another advances ``boot_generation`` when the caller has not
-    already done so.
+    already done so. A row whose channel key or fingerprint was ever signed
+    for another instance or role raises ``KeyAlreadyBound`` (``launcher.py``)
+    and nothing is written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if signer is None:
@@ -335,8 +344,13 @@ def save_registry(
             row["boot_history"] = [row["boot_id"]]
         if "starttime" not in row:
             row["starttime"] = None
-    for row in registry.workloads:
-        row["launcher_sig"] = signer.sign_row(registry.trust_domain, registry.tenant, row)
+    signatures = [
+        signer.sign_row(registry.trust_domain, registry.tenant, row)
+        for row in registry.workloads
+    ]
+    KeyOwners(launcher_dir(path)).claim(registry.workloads)
+    for row, signature in zip(registry.workloads, signatures):
+        row["launcher_sig"] = signature
     payload = {
         "schema_version": "admission-registry/v1",
         "trust_domain": registry.trust_domain,
@@ -394,6 +408,17 @@ def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
             and _generation(row.get("boot_generation")) <= _generation(old.get("boot_generation"))
         ):
             row["boot_generation"] = _generation(old.get("boot_generation")) + 1
+
+
+def _claims(row: Dict[str, object]) -> List[str]:
+    claims = [f"in:{row.get('instance_id')}"]
+    channel = row.get("channel_public")
+    if isinstance(channel, str) and channel:
+        claims.append(f"ch:{channel}")
+    fingerprint = row.get("cert_fingerprint")
+    if isinstance(fingerprint, str) and fingerprint:
+        claims.append(f"fp:{fingerprint}")
+    return claims
 
 
 def _require_channel(value: str) -> None:

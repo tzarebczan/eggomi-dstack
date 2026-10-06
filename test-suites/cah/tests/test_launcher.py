@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,8 @@ from typing import Any, Dict, List
 
 from cah.auth import authenticate_unix
 from cah.launcher import (
+    KEY_OWNERS,
+    KeyAlreadyBound,
     LauncherSigner,
     RowNotSignable,
     js_json,
@@ -27,6 +31,7 @@ from cah.registry import (
     AdmissionRegistry,
     bind_process,
     load_registry,
+    rebind_channel,
     save_registry,
 )
 
@@ -218,6 +223,115 @@ class SignedRegistryTests(unittest.TestCase):
             finally:
                 left.close()
                 right.close()
+
+
+class KeyOwnerTests(unittest.TestCase):
+    """A key or fingerprint keeps its first owner, even after its row is gone."""
+
+    def test_second_instance_cannot_take_a_bound_channel_key(self) -> None:
+        """The save is refused and the file is unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            before = path.read_bytes()
+            with self.assertRaises(KeyAlreadyBound):
+                _save(path, [_row("browser-1"), _row("browser-2")])
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_key_stays_owned_after_its_row_is_gone(self) -> None:
+        """A clone launched with the parent's key after the parent left."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            _save(path, [])
+            path.unlink()
+            with self.assertRaises(KeyAlreadyBound):
+                _save(path, [_row("clone-1")])
+            self.assertFalse(path.exists())
+            journal = launcher_dir(path) / KEY_OWNERS
+            self.assertIn("ch:" + "ab" * 32, journal.read_text(encoding="utf-8"))
+            self.assertNotIn("authority", str(journal.relative_to(tmp)))
+
+    def test_same_instance_with_another_role_is_refused(self) -> None:
+        """The owner is the instance and the role together."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            row = _row("browser-1")
+            row["role"] = "omi-runner"
+            with self.assertRaises(KeyAlreadyBound):
+                _save(path, [row])
+
+    def test_fingerprint_is_owned_like_a_channel_key(self) -> None:
+        """A certificate fingerprint moved to another instance is refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            first = _row("browser-1")
+            first["cert_fingerprint"] = "fp-one"
+            _save(path, [first, _row("browser-2", "cd" * 32)])
+            with self.assertRaises(KeyAlreadyBound):
+                bind_process(path, "browser-2", None, fingerprint="fp-one")
+            identity = load_registry(path).find_instance("browser-2")
+            assert identity is not None
+            self.assertIsNone(identity.cert_fingerprint)
+
+    def test_rebind_to_another_instances_key_is_refused(self) -> None:
+        """An instance may return to its own key but not take another's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1"), _row("browser-2", "cd" * 32)])
+            with self.assertRaises(KeyAlreadyBound):
+                rebind_channel(path, "browser-2", "ab" * 32)
+            rebind_channel(path, "browser-1", "ef" * 32)
+            back = rebind_channel(path, "browser-1", "ab" * 32)
+            self.assertEqual(back.kind, "rebound")
+            self.assertEqual(back.boot_generation, 3)
+            identity = load_registry(path).find_instance("browser-2")
+            assert identity is not None
+            self.assertEqual(identity.channel_public, "cd" * 32)
+
+    def test_memory_survives_a_new_process(self) -> None:
+        """The owner journal is read from disk on every save."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            code = (
+                "import sys\n"
+                "from pathlib import Path\n"
+                "from cah.launcher import KeyAlreadyBound\n"
+                "from cah.registry import AdmissionRegistry, save_registry\n"
+                "row={'role':'browser-guard','instance_id':'clone-1',"
+                "'boot_id':'b','boot_generation':1,'boot_history':['b'],"
+                "'channel_public':'ab'*32}\n"
+                "try:\n"
+                " save_registry(Path(sys.argv[1]), AdmissionRegistry("
+                "trust_domain='lab.cah', tenant='t', workloads=[row]))\n"
+                "except KeyAlreadyBound:\n"
+                " sys.exit(3)\n"
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+            done = subprocess.run(
+                [sys.executable, "-c", code, str(path)], env=env, check=False
+            )
+            self.assertEqual(done.returncode, 3)
+
+    def test_spliced_rows_for_one_instance_are_no_identity(self) -> None:
+        """Two validly signed versions of one row, pasted together."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            old = json.loads(path.read_text(encoding="utf-8"))["workloads"][0]
+            rebind_channel(path, "browser-1", "ef" * 32)
+            self.assertIsNotNone(load_registry(path).find_instance("browser-1"))
+
+            def splice(rows: List[Dict[str, Any]]) -> None:
+                rows.insert(0, old)
+
+            _rewrite(path, splice)
+            registry = load_registry(path)
+            self.assertIsNone(registry.find_instance("browser-1"))
+            self.assertIsNone(registry.find_channel("ab" * 32))
 
 
 if __name__ == "__main__":
