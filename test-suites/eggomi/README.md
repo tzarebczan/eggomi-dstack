@@ -124,6 +124,25 @@ that command exits 77. `./s6-faults.sh` without arguments keeps the unit
 result and records that skip instead of treating it as a passing container
 run.
 
+## Run S2
+
+S2 deploys `s2-compose.yml`, a guest client that quotes through the guest
+agent and calls a long-running `snp-sim-kms serve` on the host. The script
+then checks four outcomes: release refused while the gate is off; a signed
+release for the matching measurement and nonce; refusal of a replay, a
+report_data mismatch, and a MEASUREMENT mismatch; and production-root
+refusal of the release evidence.
+
+```bash
+cargo build --manifest-path dstack/Cargo.toml --release -p snp-sim-kms
+./test-suites/eggomi/scripts/s2-kms.sh
+```
+
+S0, S1, and S2 reuse a collateral server that already listens on
+`EGGOMI_COLLATERAL_PORT`. The [L1 runbook](../../docs/eggomi/l1-lab-runbook.md)
+covers a standing lab, run with `scripts/l1-lab.sh`, and records measured
+results.
+
 ## Lab SNP KMS
 
 `snp-sim-kms` is the in-process simulated SEV-SNP key service. It is lab-only:
@@ -135,6 +154,9 @@ does not return success. From the repository root, run `cargo test --manifest-pa
 
 S0 and S1 cover only the outer dstack CVM. Running browser and keeper smolvms
 inside it additionally requires nested KVM to be exposed to the outer guest.
+`nested-kvm-probe.yml` reports what the guest sees. On the first L1 host the
+guest CPU showed `svm`, but the 0.6.0 guest kernel has no KVM, so `/dev/kvm`
+was missing.
 A cloud VM can therefore pass this milestone while remaining unsuitable for
 the later smolvm-inside-CVM suites. On hosts without nested virtualization,
 run smolvm host-native as the L2 baseline and keep the outer simulator smoke

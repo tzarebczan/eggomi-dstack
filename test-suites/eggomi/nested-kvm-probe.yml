@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+
+# Reports whether the outer simulated-SNP CVM can host smolvm subVMs: the
+# guest CPU must advertise svm (or vmx), the guest kernel must have KVM, and
+# /dev/kvm must exist. Privileged only to read the guest's /dev and modules
+# and to try loading kvm_amd.
+# The host reads the report from the published port 8080.
+services:
+  nested-kvm-probe:
+    image: busybox:1.37
+    privileged: true
+    ports:
+      - "8080:8080"
+    volumes:
+      - /lib/modules:/lib/modules:ro
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /www
+        {
+          printf 'cpu_virt_flag=%s\n' "$$(grep -o -w -m1 -E 'svm|vmx' /proc/cpuinfo || echo none)"
+          printf 'dev_kvm=%s\n' "$$(ls -l /dev/kvm 2>/dev/null || echo missing)"
+          printf 'kvm_modules=%s\n' "$$(grep -E '^kvm' /proc/modules | cut -d' ' -f1 | tr '\n' ' ')"
+          printf 'kvm_module_files=%s\n' "$$(find /lib/modules/$$(uname -r) -name 'kvm*.ko*' 2>/dev/null | tr '\n' ' ')"
+          printf 'modprobe_kvm_amd=%s\n' "$$(modprobe kvm_amd 2>&1 && echo ok)"
+          printf 'dev_kvm_after_modprobe=%s\n' "$$(ls -l /dev/kvm 2>/dev/null || echo missing)"
+          printf 'kvm_amd_nested=%s\n' "$$(cat /sys/module/kvm_amd/parameters/nested 2>/dev/null || echo n/a)"
+          printf 'kernel=%s\n' "$$(uname -r)"
+          printf 'vcpus=%s\n' "$$(grep -c ^processor /proc/cpuinfo)"
+        } > /www/index.html
+        exec httpd -f -p 8080 -h /www
