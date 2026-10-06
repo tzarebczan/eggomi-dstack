@@ -90,7 +90,7 @@ wait_for_boot() {
         "${VMM_CLI[@]}" logs "$vm_id" -n 300 >&2 || true
         die "vm boot failed: $error"
       fi
-      if [[ "$status" == running && "$progress" == done ]]; then
+      if [[ "$status" == running && "$progress" == "done" ]]; then
         printf '%s\n' "$info" >"$WORK_DIR/vm-info.json"
         return
       fi
@@ -121,7 +121,8 @@ wait_for_probe() {
 }
 
 assert_snp_launch_shape() {
-  local vm_id=$1 vm_work="$VM_DIR/$vm_id"
+  local vm_id=$1
+  local vm_work="$VM_DIR/$vm_id"
   local manifest="$vm_work/vm-manifest.json"
   local simulator="$vm_work/shared/.tee-simulator.json"
   local sys_config="$vm_work/shared/.sys-config.json"
@@ -152,11 +153,14 @@ assert_snp_launch_shape() {
 }
 
 write_metrics() {
-  local vm_id=$1 boot_seconds=$2 vm_work="$VM_DIR/$vm_id"
+  local vm_id=$1 boot_seconds=$2
+  local vm_work="$VM_DIR/$vm_id"
   local rss_kib disk_bytes
   rss_kib=$(ps -eo rss=,args= | awk -v id="$vm_id" \
     '$0 ~ /qemu-system/ && index($0, id) {sum += $1} END {print sum + 0}')
-  disk_bytes=$(du -sb "$vm_work" 2>/dev/null | awk '{print $1}' || true)
+  # disk_prealloc=off leaves a sparse qcow2. `du -b` is --apparent-size and
+  # would record the virtual size. -B1 without --apparent-size is allocated bytes.
+  disk_bytes=$(du -s -B1 "$vm_work" 2>/dev/null | awk '{print $1}' || true)
   [[ -n "$disk_bytes" ]] || disk_bytes=NaN
   cat >"$METRICS" <<EOF
 # Eggomi S0 outer-CVM smoke metrics.
@@ -165,6 +169,7 @@ eggomi_s0_boot_seconds $boot_seconds
 eggomi_s0_qemu_rss_bytes $((rss_kib * 1024))
 # Guest MemAvailable collection requires a guest metrics endpoint in a later milestone.
 eggomi_s0_guest_mem_available_bytes NaN
+# Allocated host bytes. Sparse virtual size is not counted.
 eggomi_s0_vm_disk_bytes $disk_bytes
 EOF
 }

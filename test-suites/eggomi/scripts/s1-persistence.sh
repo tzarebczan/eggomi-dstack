@@ -37,7 +37,8 @@ cleanup() {
 trap cleanup EXIT
 
 wait_for_status() {
-  local vm_id=$1 wanted=$2 timeout=$3 deadline=$((SECONDS + timeout))
+  local vm_id=$1 wanted=$2 timeout=$3
+  local deadline=$((SECONDS + timeout))
   while ((SECONDS < deadline)); do
     local info status progress error
     info=$("${VMM_CLI[@]}" info "$vm_id" --json 2>/dev/null || true)
@@ -51,7 +52,7 @@ wait_for_status() {
       if [[ "$wanted" == stopped && ( "$status" == stopped || "$status" == exited ) ]]; then
         return
       fi
-      if [[ "$wanted" == running && "$status" == running && "$progress" == done ]]; then
+      if [[ "$wanted" == running && "$status" == running && "$progress" == "done" ]]; then
         printf '%s\n' "$info" >"$WORK_DIR/vm-info-after-restart.json"
         return
       fi
