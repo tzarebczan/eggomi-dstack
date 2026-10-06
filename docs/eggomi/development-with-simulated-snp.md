@@ -138,7 +138,7 @@ dstack info VM_ID
 ```
 
 reports `Status: running` and `Boot Progress: done`. The guest must be able
-to pull `alpine:3.20` for the persistence probe. The VMM writes an
+to pull `busybox:1.37` for the persistence probe. The VMM writes an
 instance-specific `.tee-simulator.json`. Its `platform` is
 `dstack-amd-sev-snp`, and its `vm_config` contains both `sev_snp_measurement`
 and the MrConfigV3 document. Current development images include
