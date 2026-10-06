@@ -119,6 +119,13 @@ that command exits 77. `./s6-faults.sh` without arguments keeps the unit
 result and records that skip instead of treating it as a passing container
 run.
 
+## Lab SNP KMS
+
+`snp-sim-kms` is the in-process simulated SEV-SNP key service. It is lab-only:
+a production quote verifier rejects its VCEK chain, and `production_gate`
+does not return success. Run `cargo test -p snp-sim-kms`. The notes are in
+[docs/eggomi/simulated-snp-kms.md](../../docs/eggomi/simulated-snp-kms.md).
+
 ## Nested virtualization
 
 S0 and S1 cover only the outer dstack CVM. Running browser and keeper smolvms

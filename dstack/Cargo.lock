@@ -7405,6 +7405,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "snp-sim-kms"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "hkdf",
+ "k256",
+ "mock-attestation",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sev-snp-qvl",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -57,8 +57,14 @@ simulator implementation.
    release to succeed.
 4. Prevent this suite from using production collateral or secrets.
 
-This suite is deferred until the KMS harness can isolate its policy and
-collateral endpoints safely.
+The in-process lab stand-in is `snp-sim-kms`. It boots a simulated VCEK
+chain, refuses release while the gate is off, releases one key only when
+`MEASUREMENT` and `report_data` match, and refuses that output at
+`QuoteVerifier::new_prod`. See
+[simulated-snp-kms.md](simulated-snp-kms.md). The production `dstack-kms`
+binary, its key derivation, and Phala TDX are unchanged. Wiring this policy
+into a long-running KMS process with mock collateral endpoints is still
+deferred.
 
 ### S3: browser and keeper lifecycle
 
