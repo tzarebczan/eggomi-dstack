@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "snp-sim-kms"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lab-only simulated SEV-SNP KMS. Outputs never pass a production gate."
+
+[dependencies]
+anyhow.workspace = true
+hkdf.workspace = true
+k256 = { workspace = true, features = ["ecdsa"] }
+mock-attestation = { path = "../mock-attestation" }
+rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+sev-snp-qvl.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+mock-attestation = { path = "../mock-attestation" }
+serde_json.workspace = true
+sev-snp-qvl.workspace = true

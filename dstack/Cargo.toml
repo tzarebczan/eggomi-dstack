@@ -72,6 +72,7 @@ members = [
     "crates/api-auth",
     "crates/build-info",
     "crates/mock-attestation",
+    "crates/snp-sim-kms",
     "crates/qemu-acpi",
     "crates/pki-fetch",
 ]
