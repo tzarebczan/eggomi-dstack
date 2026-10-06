@@ -88,6 +88,29 @@ Requires Python 3.12, the `cryptography` package
 Ruff, when installed, is `ruff==0.11.4` with select `E,F,I,D` and ignore
 `D203,D213,E501`.
 
+## Eggomi interop
+
+`tests/test_interop.py` checks that this suite and Eggomi's keeper agree on
+the Noise KK channel bytes and on the `launcher_sig` row bytes and
+signature. The vector half always runs: it recomputes
+`vectors/eggomi-interop.json`, which Eggomi's own `channel.ts`,
+`registry.ts` and `packages/noise` produced, in Python. The live half runs
+Eggomi's TypeScript against the stack over Unix sockets (an Eggomi workload
+through this keeper's pidfd gate, this workload against Eggomi's
+`serveChannel`), feeds a stack-written registry to Eggomi's `readRegistry`,
+and regenerates the vectors file to prove it is still Eggomi's output:
+
+```bash
+CAH_EGGOMI_NODE_MODULES=/path/to/eggomi/node_modules \
+  ./test-suites/cah/scripts/eggomi-interop.sh /path/to/eggomi origin/master
+```
+
+It needs `node` (22.15+ for `module.registerHooks`, or older with
+`module.register`) and a `node_modules` holding `@noble/ciphers`,
+`@noble/curves`, `@noble/hashes` and `typescript`. Eggomi sources are read
+through `git archive`. `CAH_INTEROP_UPDATE=1` rewrites the vectors file
+first. Without `CAH_EGGOMI_CHECKOUT` the live tests are skipped by name.
+
 ## Layout
 
 ```text
@@ -96,7 +119,9 @@ profiles/eggomi service-access, graph, fill fixture, J-id aliases
 examples/       workload-use-grant and harness-local experiment record
 schemas/        pinned resource-measurement/v1 schema
 scripts/        launch, fill, unit tests
-tests/          access, grants, metrics, forwarder, full demo
+tests/          access, grants, metrics, forwarder, channel, launcher, interop, full demo
+interop/        Node driver for Eggomi's keeper code (live interop only)
+vectors/        official Noise KK vectors and the Eggomi interop vectors
 ```
 
 `.state/` is gitignored. Each demo deletes its state directory and starts
