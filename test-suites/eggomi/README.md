@@ -143,6 +143,49 @@ S0, S1, and S2 reuse a collateral server that already listens on
 covers a standing lab, run with `scripts/l1-lab.sh`, and records measured
 results.
 
+## Run S3 and S4 (smolvm subVMs, L2)
+
+S3 and S4 run a keeper and a browser smolvm on the host, without the outer
+CVM. They need `/dev/kvm`, a smolvm release (1.23.7 or later), `jq`, and a
+host `python3` with `cryptography` (`pip install -r
+test-suites/cah/requirements.txt`). Reading checkpoints needs Python 3.14 or
+the `zstd` command.
+
+```bash
+export SMOLVM=/path/to/smolvm-1.23.7-linux-x86_64/smolvm   # or smolvm on PATH
+export SMOLVM_DATA_DIR=$HOME/lab/smolvm-data               # optional
+./test-suites/eggomi/scripts/s3-smolvm.sh --preflight
+./test-suites/eggomi/scripts/s3-smolvm.sh
+./test-suites/eggomi/scripts/s4-secret-rpc.sh
+```
+
+The first run builds two base packs, `alpine:3.22` plus `python3
+py3-cryptography` (keeper, about 37 MB) and plus `chromium` (browser, about
+325 MB), under `.state/smolvm-packs/`. That needs network once. Each run then
+creates machines from the packs, copies in `test-suites/cah/cah` and
+`test-suites/eggomi/subvm`, and installs throwaway keys and a throwaway
+secret as files. The keys and secret are deleted when the run ends.
+
+S3 writes `.state/work/s3-metrics.prom` and `s3-report.json`. S4 writes
+`s4-metrics.prom` and `s4-report.json`. Missing KVM, smolvm, or host tools
+exit 77 with `eggomi_s3_available 0` (or `eggomi_s4_available 0`), the same
+skip convention as S0. The keeper channel is published on host port 47011;
+set `EGGOMI_KEEPER_PORT` when that port is taken. `EGGOMI_KEEP=1` keeps the
+machines for inspection.
+
+smolvm keeps up to three restored-checkpoint extractions (about 450-650 MB
+each for the browser) as a restore cache after the machines are gone.
+`smolvm pack prune --all` removes them.
+
+Host-only unit tests for the keeper channel and the leak scanner:
+
+```bash
+./test-suites/eggomi/scripts/subvm-unit-tests.sh
+```
+
+Design, numbers, gaps, and how the suites map onto the inner-isolation options are in
+[docs/eggomi/subvm-l2-results.md](../../docs/eggomi/subvm-l2-results.md).
+
 ## Lab SNP KMS
 
 `snp-sim-kms` is the in-process simulated SEV-SNP key service. It is lab-only:
