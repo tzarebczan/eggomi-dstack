@@ -132,6 +132,7 @@ def prepare_use(
             field=prepared.field,
             tenant=prepared.tenant,
             fence=prepared.fence,
+            keeper_epoch=prepared.keeper_epoch,
         )
     except ValueError:
         return rpc_error("denied_payload")
@@ -192,7 +193,9 @@ def resolve_use_grant(
             tenant=parsed["tenant"],
         )
         return rpc_error(str(finished["code"]))
-    audience = preview.get("audience") if isinstance(preview.get("audience"), dict) else {}
+    audience = (
+        preview.get("audience") if isinstance(preview.get("audience"), dict) else {}
+    )
     if auth.identity.channel_public != audience.get("channel_public"):
         return rpc_error("denied_role")
     secret = _fill_secret(state)
@@ -392,6 +395,7 @@ def _seal_grant(
         navigation_generation=str(grant["destination_binding"]["document_generation"]),
         fence=str(grant.get("fence") or ""),
         epoch=int(lease["epoch"]),
+        keeper_epoch=int(lease["keeper_epoch"]),
         expiry_challenge=challenge,
         expiry_offset_ms=offset,
         requester_instance=str(grant["requester"]["instance_id"]),
@@ -429,9 +433,7 @@ def _fields_ok(body: Dict[str, Any]) -> bool:
     return True
 
 
-def _consumed_grant(
-    state: ServerState, operation_id: str
-) -> Optional[Dict[str, Any]]:
+def _consumed_grant(state: ServerState, operation_id: str) -> Optional[Dict[str, Any]]:
     if state.grants is None:
         return None
     grant = state.grants.find_operation(operation_id)

@@ -42,6 +42,7 @@ class PreparedUse:
     audience_instance: str
     field: str
     fence: str
+    keeper_epoch: int
 
 
 def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
@@ -62,7 +63,11 @@ def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
     payload = json.dumps(document, indent=2, sort_keys=True) + "\n"
     target = directory / f"{revision}.json"
     current_path = directory / "current"
-    current = current_path.read_text(encoding="utf-8").strip() if current_path.exists() else ""
+    current = (
+        current_path.read_text(encoding="utf-8").strip()
+        if current_path.exists()
+        else ""
+    )
     if target.exists() and target.read_text(encoding="utf-8") != payload:
         raise ValueError("keeper policy revision is immutable")
     if target.exists():
@@ -141,6 +146,13 @@ def evaluate_prepare(
     frame_id = operation.get("frame_id")
     navigation = operation.get("navigation_generation")
     fence = lease.get("fence")
+    keeper_epoch = lease.get("keeper_epoch")
+    if (
+        isinstance(keeper_epoch, bool)
+        or not isinstance(keeper_epoch, int)
+        or keeper_epoch < 1
+    ):
+        return None
     if (
         not isinstance(frame_id, str)
         or not isinstance(navigation, str)
@@ -171,6 +183,7 @@ def evaluate_prepare(
         audience_instance=str(expected["audience_instance"]),
         field=str(expected["field"]),
         fence=fence,
+        keeper_epoch=keeper_epoch,
     )
 
 
@@ -201,6 +214,13 @@ def _validate(raw: Dict[str, Any]) -> None:
             raise ValueError("keeper policy lease is missing")
         if not isinstance(lease.get("fence"), str) or not lease["fence"]:
             raise ValueError("keeper policy fence is missing")
+        keeper_epoch = lease.get("keeper_epoch")
+        if (
+            isinstance(keeper_epoch, bool)
+            or not isinstance(keeper_epoch, int)
+            or keeper_epoch < 1
+        ):
+            raise ValueError("keeper policy keeper_epoch is missing")
 
 
 def _atomic(path: Path, text: str) -> None:

@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # CAH compartment stubs
 
 Host-native Eggomi profile for the confidential-agent harness. Evidence for

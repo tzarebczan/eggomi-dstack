@@ -17,19 +17,17 @@ from cah.admission import admit_scoped
 from cah.auth import AuthContext
 from cah.crypto_lab import generate_private, public_key
 from cah.grants import GrantStore, host_fence_paths
-from cah.seal import guard_proof, proof_transcript
 from cah.handlers import ServerState, dispatch
 from cah.policy import load_policy, publish_revision
 from cah.registry import AdmissionRegistry, WorkloadIdentity, save_registry
+from cah.seal import guard_proof, proof_transcript
 
 PROFILE = Path(__file__).resolve().parents[1] / "profiles" / "eggomi"
 BROWSER_KEY = "11" * 32
 BROKER_KEY = "22" * 32
 
 
-def _identity(
-    role: str, instance: str, channel: str | None = None
-) -> WorkloadIdentity:
+def _identity(role: str, instance: str, channel: str | None = None) -> WorkloadIdentity:
     return WorkloadIdentity(
         trust_domain="lab.cah",
         tenant="tenant-lab-1",
@@ -132,6 +130,23 @@ class HandlerTests(unittest.TestCase):
             )
             self.assertTrue(second["ok"], second)
 
+    def test_second_prepare_for_one_operation_stores_nothing(self) -> None:
+        """One approved operation yields one grant. A repeat is denied_payload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = _keeper(root)
+            omi = _auth(_identity("omi-runner", "omi-1"))
+            first = dispatch(state, omi, "PrepareUse", _prepare_body())
+            self.assertTrue(first["ok"], first)
+            again = dispatch(state, omi, "PrepareUse", _prepare_body())
+            self.assertEqual(again["code"], "denied_payload")
+            stored = json.loads(
+                (root / "authority" / "grants.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(stored["grants"]), 1)
+            row = next(iter(stored["grants"].values()))
+            self.assertEqual(row["lease"]["keeper_epoch"], 1)
+
     def test_observed_field_is_not_authority(self) -> None:
         """A body field named observed_* is refused before a grant is stored."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -144,7 +159,7 @@ class HandlerTests(unittest.TestCase):
             self.assertEqual(refused["code"], "denied_authority_field")
 
     def test_unknown_outcome_is_queryable(self) -> None:
-        """unknown is stored and returned for the consumed grant's recipient."""
+        """Unknown is stored and returned for the consumed grant's recipient."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state = _keeper(root)

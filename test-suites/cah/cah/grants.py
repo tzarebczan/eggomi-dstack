@@ -10,6 +10,11 @@ journal and keeper epoch live under ``state/host-fence``, outside
 The wire code for a boot mismatch is ``denied_boot``. Use ttl is capped at
 60 seconds. The sealed credential's own expiry is a separate 30 second
 guard check. Empty audience, field, and tenant match nothing.
+
+One approved operation yields at most one grant. Issue journals the
+operation id before the grant is saved, so restoring ``authority/`` does not
+let a second ``PrepareUse`` for that operation issue again. Journal rows are
+fsynced before the call that wrote them returns.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -34,6 +39,10 @@ MAX_TTL_SECONDS = 60.0
 TERMINAL = frozenset({"consumed", "denied_boot"})
 
 
+class OperationSpent(ValueError):
+    """The operation already has a grant. A new attempt needs a new operation."""
+
+
 class GrantStore:
     """Keeper-side store. The journal wins over a restored grants file."""
 
@@ -50,6 +59,7 @@ class GrantStore:
         self._grants: Dict[str, Dict[str, Any]] = {}
         self._journal: Dict[str, str] = {}
         self._bootstrap: set[str] = set()
+        self._operations: set[str] = set()
         self._epoch = 1
         self._load()
 
@@ -74,13 +84,16 @@ class GrantStore:
         field: str = "",
         tenant: str = "",
         fence: str = "",
+        keeper_epoch: int,
     ) -> Dict[str, Any]:
         """Create a single-use grant and return the stored record.
 
         The recipient must already have a certificate fingerprint, a channel
         key, or a pid and start time. The caller sends only ``grant_ref`` to
-        the requester. Audience, field, tenant, and fence are bindings, not
-        requester choices.
+        the requester. Audience, field, tenant, fence, and the keeper boot
+        epoch are bindings, not requester choices. A second grant for
+        ``operation_id`` raises ``OperationSpent``, including after the
+        grants file is restored, because the journal records the issue.
         """
         if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
             raise ValueError("use grant ttl must be in (0, 60] seconds")
@@ -91,6 +104,12 @@ class GrantStore:
         if not _nonempty(audience_role, audience_instance, field, tenant, fence):
             raise ValueError("audience, field, tenant, and fence must be non-empty")
         _require_public(audience_key)
+        if (
+            isinstance(keeper_epoch, bool)
+            or not isinstance(keeper_epoch, int)
+            or keeper_epoch < 1
+        ):
+            raise ValueError("keeper boot epoch must be a positive integer")
         now_unix = time.time()
         record = {
             "schema_version": SCHEMA,
@@ -120,6 +139,7 @@ class GrantStore:
             "lease": {
                 "lease_id": lease_id,
                 "epoch": lease_epoch,
+                "keeper_epoch": keeper_epoch,
                 "use_limit": 1,
                 "ttl_seconds": ttl_seconds,
                 "issued_unix": now_unix,
@@ -131,6 +151,20 @@ class GrantStore:
         }
         with self._locked():
             self._sync_locked()
+            if operation_id in self._operations or any(
+                grant["task"]["operation_id"] == operation_id
+                for grant in self._grants.values()
+            ):
+                raise OperationSpent("operation already has a grant")
+            _append_journal(
+                self.journal_path,
+                {
+                    "kind": "issue",
+                    "operation_id": operation_id,
+                    "grant_ref": record["grant_ref"],
+                },
+            )
+            self._operations.add(operation_id)
             self._grants[record["grant_ref"]] = record
             self._save_locked()
         return record
@@ -198,7 +232,9 @@ class GrantStore:
                 return {"ok": False, "code": "denied_recipient"}
             if origin != grant["policy"]["origin"]:
                 return {"ok": False, "code": "denied_origin"}
-            audience = grant.get("audience") if isinstance(grant.get("audience"), dict) else {}
+            audience = (
+                grant.get("audience") if isinstance(grant.get("audience"), dict) else {}
+            )
             stored_broker = audience.get("instance_id")
             if (
                 not isinstance(stored_broker, str)
@@ -334,6 +370,7 @@ class GrantStore:
     def _read_journal_locked(self) -> None:
         grants: Dict[str, str] = {}
         bootstrap: set[str] = set()
+        operations: set[str] = set()
         if self.journal_path.exists():
             for line in self.journal_path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
@@ -345,8 +382,13 @@ class GrantStore:
                     row.get("token_sha256"), str
                 ):
                     bootstrap.add(row["token_sha256"])
+                elif row.get("kind") == "issue" and isinstance(
+                    row.get("operation_id"), str
+                ):
+                    operations.add(row["operation_id"])
         self._journal = grants
         self._bootstrap = bootstrap
+        self._operations = operations
 
     def _save_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -508,7 +550,9 @@ def _append_journal(path: Path, row: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
-        os.chmod(path, 0o600)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(path, 0o600)
 
 
 def _read_epoch(path: Path) -> int:

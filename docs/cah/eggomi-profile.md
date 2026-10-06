@@ -40,7 +40,7 @@ a SPIFFE URI that the same registry already understands).
 - policy revision, method `CompleteFill`, resource handle, and origin
 - destination binding: origin, document generation, and frame
 - task id and operation id
-- lease id, epoch, `use_limit` 1, and a ttl of at most 60 seconds
+- lease id, epoch, keeper boot epoch, `use_limit` 1, and a ttl of at most 60 seconds
 
 The bytes on the wire are an opaque reference. `omi-runner` receives that
 reference from `PrepareUse` and the bound browser presents it to
@@ -48,7 +48,7 @@ reference from `PrepareUse` and the bound browser presents it to
 the keeper policy. The record also stores those bindings. Resolve identifies
 the guard by a possession proof of its channel key, not by `observed_*`
 fields. A missing fingerprint does not skip that check. The resolve body is
-one sealed credential (`cah-sealed-answer/v2`), authenticated with the
+one sealed credential (`cah-sealed-answer/v3`), authenticated with the
 keeper static key. The broker does not hold the plaintext. The fill canary
 lives in `authority/fill-secret`, which confined processes cannot read.
 

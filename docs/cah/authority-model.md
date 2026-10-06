@@ -67,7 +67,9 @@ navigation to `destination_binding`. A mismatch is `denied_payload` and does
 not consume the grant. On success the answer is one sealed credential. The
 broker forwards it and does not hold the plaintext. The guard rebuilds the
 associated data from its lease, its registry row, and the operation it is
-running. Expiry is a guard monotonic offset of at most 30 seconds from a
+running. The lease carries the profile-lease fence, the lease epoch, and the
+keeper boot epoch it was granted under. A seal from an older keeper boot does
+not open. Expiry is a guard monotonic offset of at most 30 seconds from a
 challenge the guard issued. The keeper's `expires_mono` is not that check.
 
 ## Consumption survives reload
@@ -77,6 +79,11 @@ Consumption and bootstrap-token use are appended to
 journal, not only inside `grants.json`. Restoring an older grant snapshot, or
 a scope file that still says `used: false`, does not revive a journaled
 grant or token.
+
+Issue is journaled with its operation id before the grant is saved. One
+operation id yields one grant, so a restored `grants.json` cannot be used to
+prepare the same approved use again. Every journal row is fsynced before the
+call returns, so the consume is durable before the sealed answer leaves.
 
 Use ttl is capped at 60 seconds.
 

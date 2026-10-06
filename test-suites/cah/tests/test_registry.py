@@ -125,6 +125,7 @@ class RegistryTests(unittest.TestCase):
                 field="password",
                 tenant="tenant-lab-1",
                 fence="fence-browser-1",
+                keeper_epoch=1,
             )
             self.assertEqual(
                 store.get(str(record["grant_ref"]))["disposition"], "issued"
@@ -254,6 +255,7 @@ class RegistryTests(unittest.TestCase):
                 field="password",
                 tenant="tenant-lab-1",
                 fence="fence-browser-1",
+                keeper_epoch=1,
             )
             snapshot = grants_path.read_bytes()
             epoch_snapshot = epoch_path.read_bytes()
@@ -280,7 +282,9 @@ class RegistryTests(unittest.TestCase):
             )
             self.assertEqual(revived["code"], "denied_boot")
             raw = load_registry(path)
-            row = next(item for item in raw.workloads if item.get("instance_id") == "browser-1")
+            row = next(
+                item for item in raw.workloads if item.get("instance_id") == "browser-1"
+            )
             row["channel_public"] = key_b
             save_registry(path, raw)
             rewritten = load_registry(path).find_instance("browser-1")

@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from cah.grants import GrantStore, host_fence_paths
+from cah.grants import GrantStore, OperationSpent, host_fence_paths
 from cah.registry import WorkloadIdentity
 
 
@@ -38,7 +40,9 @@ def _id(
     )
 
 
-def _issue(store: GrantStore, recipient: WorkloadIdentity) -> dict[str, object]:
+def _issue(
+    store: GrantStore, recipient: WorkloadIdentity, operation_id: str = "op-1"
+) -> dict[str, object]:
     return store.issue(
         _id("omi-runner", "omi-1", "boot-omi-1"),
         recipient,
@@ -46,7 +50,7 @@ def _issue(store: GrantStore, recipient: WorkloadIdentity) -> dict[str, object]:
         "cred",
         "https://lab.invalid/signin",
         "task",
-        "op-1",
+        operation_id,
         "lease",
         1,
         60,
@@ -58,6 +62,7 @@ def _issue(store: GrantStore, recipient: WorkloadIdentity) -> dict[str, object]:
         field="password",
         tenant="tenant-lab-1",
         fence="fence-browser-1",
+        keeper_epoch=1,
     )
 
 
@@ -165,7 +170,9 @@ class GrantTests(unittest.TestCase):
             self.assertEqual(store.get(str(record["grant_ref"]))["uses"], 0)
             with self.assertRaises(ValueError):
                 _issue(
-                    store, _id("browser-guard", "browser-2", "boot-2", fingerprint=None)
+                    store,
+                    _id("browser-guard", "browser-2", "boot-2", fingerprint=None),
+                    "op-2",
                 )
 
     def test_boot_generation_mismatch_revokes(self) -> None:
@@ -312,8 +319,8 @@ class GrantTests(unittest.TestCase):
                     61,
                     "frame-1",
                     "nav-1",
+                    keeper_epoch=1,
                 )
-
 
     def test_audience_field_and_tenant_do_not_consume(self) -> None:
         """A broker, field, or tenant mismatch leaves the grant issued."""
@@ -339,6 +346,7 @@ class GrantTests(unittest.TestCase):
                 field="password",
                 tenant="tenant-lab-1",
                 fence="fence-browser-1",
+                keeper_epoch=1,
             )
             wrong_broker = store.resolve(
                 str(record["grant_ref"]),
@@ -377,7 +385,9 @@ class GrantTests(unittest.TestCase):
             )
             self.assertEqual(wrong_tenant["code"], "denied_payload")
             self.assertEqual(store.get(str(record["grant_ref"]))["uses"], 0)
-            self.assertEqual(store.get(str(record["grant_ref"]))["disposition"], "issued")
+            self.assertEqual(
+                store.get(str(record["grant_ref"]))["disposition"], "issued"
+            )
 
     def test_reopen_keeps_grants_across_a_later_epoch(self) -> None:
         """A new store reads the epoch file before it decides the grants are stale."""
@@ -390,7 +400,9 @@ class GrantTests(unittest.TestCase):
             self.assertIsNotNone(reopened.get(str(record["grant_ref"])))
             reopened.note_bootstrap("cd" * 32)
             again = GrantStore(path)
-            self.assertEqual(again.get(str(record["grant_ref"]))["disposition"], "issued")
+            self.assertEqual(
+                again.get(str(record["grant_ref"]))["disposition"], "issued"
+            )
 
     def test_empty_bindings_match_nothing(self) -> None:
         """An empty field, tenant, or audience cannot be issued or matched."""
@@ -417,6 +429,7 @@ class GrantTests(unittest.TestCase):
                     field="",
                     tenant="tenant-lab-1",
                     fence="fence-browser-1",
+                    keeper_epoch=1,
                 )
             record = _issue(store, recipient)
             blank = store.resolve(
@@ -442,10 +455,64 @@ class GrantTests(unittest.TestCase):
             recipient = _id("browser-guard", "browser-1", "boot-1")
             record = _issue(writer, recipient)
             writer.note_bootstrap("ab" * 32)
-            added = _issue(reader, _id("browser-guard", "browser-2", "boot-2"))
+            added = _issue(reader, _id("browser-guard", "browser-2", "boot-2"), "op-2")
             reloaded = GrantStore(path)
             self.assertIsNotNone(reloaded.get(str(record["grant_ref"])))
             self.assertIsNotNone(reloaded.get(str(added["grant_ref"])))
+
+    def test_one_grant_per_operation_survives_a_restore(self) -> None:
+        """A second grant for one approved operation is refused, even after restore."""
+        with tempfile.TemporaryDirectory() as tmp:
+            authority = Path(tmp) / "authority"
+            journal, epoch = host_fence_paths(authority)
+            store = GrantStore(authority / "grants.json", journal, epoch)
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            empty = (
+                (authority / "grants.json").read_bytes()
+                if (authority / "grants.json").exists()
+                else None
+            )
+            first = _issue(store, recipient, "op-once")
+            with self.assertRaises(OperationSpent):
+                _issue(store, recipient, "op-once")
+            if empty is None:
+                (authority / "grants.json").unlink()
+            else:
+                (authority / "grants.json").write_bytes(empty)
+            restored = GrantStore(authority / "grants.json", journal, epoch)
+            self.assertIsNone(restored.get(str(first["grant_ref"])))
+            with self.assertRaises(OperationSpent):
+                _issue(restored, recipient, "op-once")
+            other = _issue(restored, recipient, "op-next")
+            self.assertNotEqual(other["grant_ref"], first["grant_ref"])
+
+    def test_journal_rows_are_fsynced_before_resolve_returns(self) -> None:
+        """The consume record is durable before the caller may release a seal."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GrantStore(Path(tmp) / "grants.json")
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            record = _issue(store, recipient)
+            synced: list[int] = []
+            real_fsync = os.fsync
+
+            def spy(fd: int) -> None:
+                synced.append(fd)
+                real_fsync(fd)
+
+            with mock.patch("cah.grants.os.fsync", side_effect=spy):
+                result = store.resolve(
+                    str(record["grant_ref"]),
+                    recipient,
+                    "https://lab.invalid/signin",
+                    "op-1",
+                    "frame-1",
+                    "nav-1",
+                    broker_instance="broker-1",
+                    field="password",
+                    tenant="tenant-lab-1",
+                )
+            self.assertTrue(result["ok"])
+            self.assertTrue(synced)
 
     def test_restoring_authority_does_not_revive_consume(self) -> None:
         """The host fence sits outside authority/, so a restored snapshot stays consumed."""

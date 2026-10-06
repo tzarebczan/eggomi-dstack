@@ -17,6 +17,7 @@
     "browser-1": {
       "lease_id": "lease-lab-1",
       "epoch": 1,
+      "keeper_epoch": 1,
       "role": "browser-guard",
       "fence": "fence-browser-1"
     }

@@ -4,8 +4,12 @@ The seal is authenticated to the keeper static key. A broker that never
 called the keeper can encrypt to the guard public key and still cannot
 produce a tag the guard opens. Every bound field is associated data. The
 guard rebuilds that data from values it checks itself. A field taken from
-the broker's frame is not used. The plaintext is the standing fill secret
-for this use. The broker never receives it.
+the broker's frame is not used. The plaintext is the keeper-held fill
+secret for this use. The broker never receives it.
+
+``cah-sealed-answer/v3`` adds ``keeper_epoch``: the keeper boot epoch under
+which the guard's profile lease was granted. A seal from an older keeper
+boot does not open at a guard whose lease names a newer one.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -19,10 +23,17 @@ import hmac
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping
 
-from .crypto_lab import aead_open, aead_seal, generate_private, hkdf_sha256, public_key, x25519
+from .crypto_lab import (
+    aead_open,
+    aead_seal,
+    generate_private,
+    hkdf_sha256,
+    public_key,
+    x25519,
+)
 
-SCHEMA = "cah-sealed-answer/v2"
-_SEAL_INFO = b"cah-sealed-answer/v2"
+SCHEMA = "cah-sealed-answer/v3"
+_SEAL_INFO = b"cah-sealed-answer/v3"
 MAX_OFFSET_MS = 30_000
 
 
@@ -40,6 +51,7 @@ class LiveBinding:
     navigation_generation: str
     fence: str
     epoch: int
+    keeper_epoch: int
     requester_instance: str
     task_id: str
     operation_id: str
@@ -64,6 +76,7 @@ def seal_credential(
     navigation_generation: str,
     fence: str,
     epoch: int,
+    keeper_epoch: int,
     expiry_challenge: bytes,
     expiry_offset_ms: int,
     requester_instance: str,
@@ -109,6 +122,7 @@ def seal_credential(
         navigation_generation=navigation_generation,
         fence=fence,
         epoch=epoch,
+        keeper_epoch=keeper_epoch,
         expiry_challenge=expiry_challenge,
         expiry_offset_ms=expiry_offset_ms,
         requester_instance=requester_instance,
@@ -129,7 +143,9 @@ def seal_credential(
     }
 
 
-def open_credential(lease_private: bytes, blob: Mapping[str, Any], live: LiveBinding) -> bytes:
+def open_credential(
+    lease_private: bytes, blob: Mapping[str, Any], live: LiveBinding
+) -> bytes:
     """Open ``blob`` with associated data rebuilt from ``live``.
 
     Header fields that the guard did not issue, other than the nonce and the
@@ -139,7 +155,7 @@ def open_credential(lease_private: bytes, blob: Mapping[str, Any], live: LiveBin
     if len(lease_private) != 32:
         raise ValueError("lease private key must be 32 bytes")
     if blob.get("schema_version") != SCHEMA:
-        raise ValueError("sealed answer schema is not cah-sealed-answer/v2")
+        raise ValueError("sealed answer schema is not cah-sealed-answer/v3")
     if len(live.keeper_public) != 32:
         raise ValueError("keeper public key must be 32 bytes")
     nonce = _hex32(blob.get("nonce"), "nonce")
@@ -173,6 +189,7 @@ def open_credential(lease_private: bytes, blob: Mapping[str, Any], live: LiveBin
         navigation_generation=live.navigation_generation,
         fence=live.fence,
         epoch=live.epoch,
+        keeper_epoch=live.keeper_epoch,
         expiry_challenge=live.challenge,
         expiry_offset_ms=offset,
         requester_instance=live.requester_instance,
@@ -248,6 +265,7 @@ def associated_data(
     navigation_generation: str,
     fence: str,
     epoch: int,
+    keeper_epoch: int,
     expiry_challenge: bytes,
     expiry_offset_ms: int,
     requester_instance: str,
@@ -257,7 +275,7 @@ def associated_data(
 ) -> bytes:
     """Return the canonical associated data for one sealed answer."""
     lines = [
-        "cah-sealed-ad/v1",
+        "cah-sealed-ad/v2",
         f"grant_ref={grant_ref}",
         f"nonce={nonce.hex()}",
         f"tenant={tenant}",
@@ -270,6 +288,7 @@ def associated_data(
         f"navigation_generation={navigation_generation}",
         f"fence={fence}",
         f"epoch={epoch}",
+        f"keeper_epoch={keeper_epoch}",
         f"expiry_challenge={expiry_challenge.hex()}",
         f"expiry_offset_ms={expiry_offset_ms}",
         f"requester_instance={requester_instance}",

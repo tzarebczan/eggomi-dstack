@@ -147,7 +147,9 @@ def _write_result(
 def _call(args: argparse.Namespace, fixture: Dict[str, Any]) -> Dict[str, Any]:
     mode = args.mode
     if mode == "prepare":
-        return _rpc(args, args.keeper, "keeper-core", "PrepareUse", _prepare_body(fixture))
+        return _rpc(
+            args, args.keeper, "keeper-core", "PrepareUse", _prepare_body(fixture)
+        )
     if mode == "smuggle":
         body = _prepare_body(fixture)
         body["role"] = "browser-guard"
@@ -219,7 +221,9 @@ def _fill(args: argparse.Namespace, fixture: Dict[str, Any]) -> Dict[str, Any]:
         tenant=str(fixture["tenant"]),
     )
     keeper_public = _role_public(
-        args.state / "admission.json", "keeper-core", _peer_instance(args, "keeper-core")
+        args.state / "admission.json",
+        "keeper-core",
+        _peer_instance(args, "keeper-core"),
     )
     proof = guard_proof(private, keeper_public, transcript)
     response = _rpc(
@@ -275,7 +279,9 @@ def _open_sealed(
     live = LiveBinding(
         tenant=str(lease["tenant"]),
         audience=_role_public(
-            registry_path, "credential-broker", _peer_instance(args, "credential-broker")
+            registry_path,
+            "credential-broker",
+            _peer_instance(args, "credential-broker"),
         ).hex(),
         recipient_instance=me.instance_id,
         recipient_boot_generation=me.boot_generation,
@@ -285,6 +291,7 @@ def _open_sealed(
         navigation_generation=str(fixture["navigation_generation"]),
         fence=str(lease["fence"]),
         epoch=int(lease["epoch"]),
+        keeper_epoch=int(lease["keeper_epoch"]),
         requester_instance=str(fixture["requester_instance"]),
         task_id=str(fixture["task_id"]),
         operation_id=str(fixture["operation_id"]),

@@ -30,6 +30,7 @@ def _live(**overrides: object) -> LiveBinding:
         "navigation_generation": "nav-1",
         "fence": "fence-browser-1",
         "epoch": 1,
+        "keeper_epoch": 1,
         "requester_instance": "omi-1",
         "task_id": "task-lab-1",
         "operation_id": "op-positive",
@@ -60,6 +61,7 @@ def _seal(
         navigation_generation=live.navigation_generation,
         fence=live.fence,
         epoch=live.epoch,
+        keeper_epoch=live.keeper_epoch,
         expiry_challenge=live.challenge,
         expiry_offset_ms=5_000,
         requester_instance=live.requester_instance,
@@ -94,7 +96,9 @@ class GuardTests(unittest.TestCase):
             private, store = _store(root, epoch=1)
             blob = _seal(public_key(private))
             live = _live()
-            crashed = store.accept(blob, live, now_mono=1_001.0, crash_after_record=True)
+            crashed = store.accept(
+                blob, live, now_mono=1_001.0, crash_after_record=True
+            )
             self.assertEqual(crashed["code"], "unknown")
             self.assertNotIn("fill", crashed)
             later = store.accept(blob, live, now_mono=1_001.0)
@@ -184,13 +188,29 @@ class GuardTests(unittest.TestCase):
             self.assertNotIn("fill", refused)
             self.assertFalse((root / "fence" / "consumed.jsonl").exists())
 
+    def test_older_keeper_boot_epoch_does_not_fill(self) -> None:
+        """A seal from an earlier keeper boot does not open under a newer lease."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            stale = _seal(public_key(private), keeper_epoch=1)
+            refused = store.accept(stale, _live(keeper_epoch=2), now_mono=1_001.0)
+            self.assertEqual(refused["code"], "denied_payload")
+            self.assertNotIn("fill", refused)
+            self.assertFalse((root / "fence" / "consumed.jsonl").exists())
+            current = _seal(public_key(private), keeper_epoch=2)
+            filled = store.accept(current, _live(keeper_epoch=2), now_mono=1_001.0)
+            self.assertEqual(filled.get("fill"), "cah-synthetic-fill-v1")
+
     def test_missing_fence_file_does_not_delete_the_wrapped_key(self) -> None:
         """A short read refuses the fill and leaves the wrap in place."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             private, store = _store(root, epoch=1)
             (root / "fence" / "secret").unlink()
-            refused = store.accept(_seal(public_key(private)), _live(), now_mono=1_001.0)
+            refused = store.accept(
+                _seal(public_key(private)), _live(), now_mono=1_001.0
+            )
             self.assertEqual(refused["code"], "denied_recipient")
             self.assertTrue((root / "channel.key.wrapped").is_file())
 
@@ -202,7 +222,9 @@ class GuardTests(unittest.TestCase):
             wrapped = root / "channel.key.wrapped"
             snapshot = wrapped.read_bytes()
             self.assertEqual(store.advance_epoch(), 2)
-            refused = store.accept(_seal(public_key(private)), _live(), now_mono=1_001.0)
+            refused = store.accept(
+                _seal(public_key(private)), _live(), now_mono=1_001.0
+            )
             self.assertEqual(refused["code"], "denied_recipient")
             self.assertFalse(wrapped.exists())
             wrapped.write_bytes(snapshot)
