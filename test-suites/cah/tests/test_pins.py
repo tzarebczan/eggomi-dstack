@@ -57,6 +57,16 @@ class PinTests(unittest.TestCase):
         self.assertEqual(packet["this_slice_evidence"], "process_e2e")
         self.assertEqual(packet["evidence_level_alias"], "E1")
         self.assertEqual(packet["passed_gate_ids"], [])
+        # Every host-fence file the keeper writes is in the inventory, and
+        # matches grants.host_fence_paths / keeper_boot_path.
+        from cah.grants import host_fence_paths, keeper_boot_path
+
+        store = next(k for k in packet["key_inventory"] if k["id"] == "grant_store")
+        authority = Path("state/authority")
+        journal, epoch = host_fence_paths(authority)
+        self.assertEqual(store["journal_path"], str(journal))
+        self.assertEqual(store["epoch_path"], str(epoch))
+        self.assertEqual(store["boot_epoch_path"], str(keeper_boot_path(authority)))
         self.assertEqual(packet["ws1_zip_sha256"], ZIP_SHA256)
         self.assertEqual(
             packet["not_claimed"],

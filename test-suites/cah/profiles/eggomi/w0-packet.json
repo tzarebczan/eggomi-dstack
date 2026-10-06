@@ -67,6 +67,7 @@
       "path": "state/authority/grants.json",
       "journal_path": "state/host-fence/authority-journal.jsonl",
       "epoch_path": "state/host-fence/keeper-epoch",
+      "boot_epoch_path": "state/host-fence/keeper-boot-epoch",
       "mode": "0600",
       "when": "every fill run",
       "readers": "Keeper. Confined processes hide state/authority and state/host-fence.",
