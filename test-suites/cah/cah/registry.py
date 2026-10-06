@@ -34,6 +34,7 @@ from typing import Dict, FrozenSet, Iterator, List, Optional, Tuple
 from .launcher import (
     KeyOwners,
     LauncherSigner,
+    RowNotSignable,
     fsync_dir,
     launcher_dir,
     row_attributed,
@@ -104,14 +105,24 @@ class AdmissionRegistry:
             if isinstance(row, dict)
             and row_attributed(self.trust_domain, self.tenant, row)
         ]
+        # Floors first, for every signed row: a row refused below for a
+        # shared claim still raises them, as in Eggomi's readRegistry.
+        source = self.source
+        floor_ok = [
+            True
+            if source is None
+            else _floors.admit(source, self.trust_domain, self.tenant, row)
+            for row in rows
+        ]
         counts: Dict[str, int] = {}
         for row in rows:
             for claim in _claims(row):
                 counts[claim] = counts.get(claim, 0) + 1
-        unique = [row for row in rows if all(counts[c] == 1 for c in _claims(row))]
-        if self.source is None:
-            return unique
-        return [row for row in unique if _floors.admit(self.source, row)]
+        return [
+            row
+            for row, ok in zip(rows, floor_ok)
+            if ok and all(counts[c] == 1 for c in _claims(row))
+        ]
 
     def find_pid(self, pid: int) -> Optional[WorkloadIdentity]:
         """Return the workload bound to this pid and its current start time.
@@ -253,10 +264,17 @@ class _Floors:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._seen: Dict[Tuple[str, str], Tuple[int, str, FrozenSet[str]]] = {}
+        self._seen: Dict[
+            Tuple[str, str], Tuple[int, str, FrozenSet[str], Tuple[object, ...]]
+        ] = {}
 
-    def admit(self, source: str, row: Dict[str, object]) -> bool:
+    def admit(
+        self, source: str, trust_domain: str, tenant: str, row: Dict[str, object]
+    ) -> bool:
         key = (source, str(row.get("instance_id")))
+        incarnation = (trust_domain, tenant) + tuple(
+            row.get(name) for name in _IDENTITY_FIELDS
+        )
         generation = _generation(row.get("boot_generation"))
         boot_id = str(row.get("boot_id"))
         history = row.get("boot_history")
@@ -268,15 +286,17 @@ class _Floors:
         with self._lock:
             seen = self._seen.get(key)
             if seen is not None:
-                floor, floor_boot, floor_left = seen
+                floor, floor_boot, floor_left, floor_incarnation = seen
                 if generation < floor:
+                    return False
+                if generation == floor and incarnation != floor_incarnation:
                     return False
                 if boot_id != floor_boot and boot_id in floor_left:
                     return False
                 left |= floor_left
                 if boot_id != floor_boot:
                     left.add(floor_boot)
-            self._seen[key] = (generation, boot_id, frozenset(left))
+            self._seen[key] = (generation, boot_id, frozenset(left), incarnation)
             return True
 
 
@@ -419,6 +439,8 @@ def save_registry(
     path.parent.mkdir(parents=True, exist_ok=True)
     if signer is None:
         signer = LauncherSigner.at(launcher_dir(path))
+    if path.exists() and path.stat().st_size > 0:
+        load_for_launcher(path, signer)
     _advance_changed_channels(path, registry)
     for row in registry.workloads:
         if "boot_generation" not in row:
@@ -475,6 +497,9 @@ def _atomic_write(path: Path, text: str) -> None:
     leave the new file writable to them.
     """
     data = text.encode("utf-8")
+    os.close(
+        os.open(path.with_name(path.name + ".wlock"), os.O_RDONLY | os.O_CREAT, 0o644)
+    )
     if not path.exists():
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_bytes(data)
@@ -530,11 +555,14 @@ def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
         old = old_rows.get(row.get("instance_id"))
         if not isinstance(old, dict):
             continue
+        old_generation = _generation(old.get("boot_generation"))
+        if _generation(row.get("boot_generation")) < old_generation:
+            raise RowNotSignable(
+                f"boot_generation of {row.get('instance_id')} would go back"
+            )
         changed = any(old.get(name) != row.get(name) for name in _IDENTITY_FIELDS)
-        if changed and _generation(row.get("boot_generation")) <= _generation(
-            old.get("boot_generation")
-        ):
-            row["boot_generation"] = _generation(old.get("boot_generation")) + 1
+        if changed and _generation(row.get("boot_generation")) <= old_generation:
+            row["boot_generation"] = old_generation + 1
 
 
 _IDENTITY_FIELDS = (

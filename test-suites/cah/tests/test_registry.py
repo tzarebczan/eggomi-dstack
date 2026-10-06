@@ -366,6 +366,85 @@ class FirstBindTests(unittest.TestCase):
             first = rebind_channel(path, "browser-1", "1a" * 32)
             self.assertEqual((first.kind, first.boot_generation), ("bound", 2))
 
+    def test_first_bind_revokes_grants_issued_before_it(self) -> None:
+        """The launcher's bind revokes a grant issued to the pre-bind row."""
+        from cah.demo import _bind
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            (state / "authority").mkdir()
+            (state / "host-fence").mkdir()
+            path = state / "admission.json"
+            self._empty(path)
+            rebind_channel(path, "browser-1", "1a" * 32)
+            row = load_registry(path).find_instance("browser-1")
+            assert row is not None
+            from cah.grants import host_fence_paths
+
+            journal_path, epoch_path = host_fence_paths(state / "authority")
+            store = GrantStore(
+                state / "authority" / "grants.json", journal_path, epoch_path
+            )
+            record = store.issue(
+                _party("omi-runner", "omi-1", "boot-omi-1", "omi-fp"),
+                row,
+                "pol",
+                "cred",
+                "https://lab.invalid/signin",
+                "task",
+                "op-1",
+                "lease",
+                1,
+                60,
+                "frame-1",
+                "nav-1",
+                audience_role="credential-broker",
+                audience_instance="broker-1",
+                audience_key="cc" * 32,
+                field="password",
+                tenant="tenant-lab-1",
+                fence="fence-browser-1",
+                keeper_epoch=1,
+            )
+            result = _bind(state, "browser-1", os.getpid())
+            self.assertEqual((result.kind, result.boot_generation), ("bound", 3))
+            self.assertEqual(
+                store.get(str(record["grant_ref"]))["disposition"], "denied_boot"
+            )
+
+    def test_save_refuses_a_generation_that_goes_back(self) -> None:
+        """An otherwise identical row saved with a lower generation is refused."""
+        from cah.launcher import RowNotSignable
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            self._empty(path)
+            rebind_channel(path, "browser-1", "1a" * 32)
+            raw = load_registry(path)
+            raw.workloads[0]["boot_generation"] = 1
+            with self.assertRaises(RowNotSignable):
+                save_registry(path, raw)
+            self.assertTrue(path.with_name("admission.json.wlock").exists())
+
+    def test_reader_refuses_a_same_generation_incarnation_change(self) -> None:
+        """Two signed spellings of generation 2 with different keys."""
+        from cah.launcher import LauncherSigner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            self._empty(path)
+            rebind_channel(path, "browser-1", "1a" * 32)
+            self.assertIsNotNone(load_registry(path).find_instance("browser-1"))
+            signer = LauncherSigner.at(Path(tmp) / "launcher")
+            import json
+
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            row = raw["workloads"][0]
+            row["channel_public"] = "2b" * 32
+            row["launcher_sig"] = signer.sign_row("lab.cah", "tenant-lab-1", row)
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            self.assertIsNone(load_registry(path).find_instance("browser-1"))
+
     def test_any_save_path_advances_a_changed_row(self) -> None:
         """A direct launcher save that fills an identity field also advances."""
         with tempfile.TemporaryDirectory() as tmp:

@@ -408,7 +408,9 @@ class LiveEggomiTests(unittest.TestCase):
                 if method == "Refuse":
                     return rpc_error("denied_role")
                 if method == "Rebind":
-                    rebind_channel(registry, "omi-1", os.urandom(32).hex())
+                    rebind_channel(
+                        registry, "omi-1", public_from_private(os.urandom(32)).hex()
+                    )
                 return rpc_ok({"echo": body})
 
             stop = root / "stop"

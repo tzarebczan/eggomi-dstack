@@ -372,6 +372,34 @@ class ReviewFindingTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
             self.assertIsNone(load_registry(path).find_instance("keeper-x"))
 
+    def test_direct_save_does_not_re_sign_an_injected_row(self) -> None:
+        """load_registry, edit, save_registry refuses an unsigned row on disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+
+            def inject(rows: List[Dict[str, Any]]) -> None:
+                rows.append(_row("keeper-x", "4c" * 32))
+
+            _rewrite(path, inject)
+            raw = load_registry(path)
+            with self.assertRaises(RegistryTampered):
+                save_registry(path, raw)
+            self.assertIsNone(load_registry(path).find_instance("keeper-x"))
+
+    def test_conflicting_newer_row_still_raises_the_floor(self) -> None:
+        """A generation-2 row refused for a shared pid still blocks generation 1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1"), _row("browser-2", "2d" * 32)])
+            old = path.read_bytes()
+            self.assertIsNotNone(load_registry(path).find_instance("browser-1"))
+            bind_process(path, "browser-1", os.getpid())
+            bind_process(path, "browser-2", os.getpid())
+            self.assertIsNone(load_registry(path).find_instance("browser-1"))
+            path.write_bytes(old)
+            self.assertIsNone(load_registry(path).find_instance("browser-1"))
+
     def test_replayed_older_row_is_no_identity(self) -> None:
         """Once generation 2 was read, the signed generation 1 row is refused."""
         with tempfile.TemporaryDirectory() as tmp:

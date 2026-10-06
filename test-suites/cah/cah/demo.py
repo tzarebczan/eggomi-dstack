@@ -1038,14 +1038,20 @@ def _bootstrap_fields() -> Dict[str, str]:
 
 def _bind(state: Path, instance: str, pid: int) -> BindResult:
     result = bind_process(state / "admission.json", instance, pid)
+    if result.kind == "unchanged":
+        return result
+    # Every bind advances boot_generation, the first one included, so every
+    # bind revokes the instance's issued grants. The guard fence (its
+    # wrapped key) moves only on a rebind: the first bind is the key the
+    # launcher provisioned.
+    journal_path, epoch_path = host_fence_paths(state / "authority")
+    revoke_instance_grants(
+        state / "authority" / "grants.json",
+        journal_path,
+        epoch_path,
+        instance,
+    )
     if result.kind == "rebound":
-        journal_path, epoch_path = host_fence_paths(state / "authority")
-        revoke_instance_grants(
-            state / "authority" / "grants.json",
-            journal_path,
-            epoch_path,
-            instance,
-        )
         fence = state / "fence" / instance
         if fence.is_dir():
             wrapped = state / "roles" / instance / "channel.key.wrapped"

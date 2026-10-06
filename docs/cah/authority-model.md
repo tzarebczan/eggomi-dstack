@@ -62,13 +62,15 @@ foreign-signed row is no identity: the pidfd gate refuses its peer with
 instance, channel key or fingerprint that two signed rows claim is no
 identity for either. A reader also remembers, per registry file and in
 memory, the highest generation and the boot ids each instance left. A
-signed row older than one it already read is no identity, so writing an
+signed row older than one it already read, or a different incarnation at
+the generation it already read, is no identity, so writing an
 earlier signed registry back does not revive an old incarnation for a
 reader that saw the newer one. A restarted reader starts empty. That is the
 same scope as Eggomi's in-memory `Watermarks`.
 
-The launcher only rewrites a file whose every row it signed. A row someone
-else put in the registry makes the next launcher write fail
+The launcher only rewrites a file whose every row it signed, on every write
+path (`save_registry` checks the file on disk). A row someone else put in
+the registry makes the next launcher write fail
 (`RegistryTampered`) instead of being signed with the rest. A channel key
 must be canonical (64 lowercase hex, top bit clear, below 2^255 - 19), so
 no other spelling of one X25519 key can be bound to a second owner.
@@ -105,7 +107,10 @@ records a pid, a fingerprint or a channel key on a row that has none (the
 launcher reports it as `bound`, not `rebound`). That is Eggomi's rule: its
 keeper refuses an incarnation change at the same generation
 (`rebind_without_generation`). Repeating the stored values does not
-advance. `set_boot` accepts only a boot id that is not already in
+advance, and a save that would lower a generation is refused. Because the
+first bind is a new generation, the demo launcher revokes the instance's
+issued grants on every bind; the guard fence moves only on a rebind, since
+the first bind keeps the key the launcher provisioned. `set_boot` accepts only a boot id that is not already in
 `boot_history`. Repeating an older id raises `BootRollback`. A generation
 mismatch on resolve is terminal `denied_boot`. Returning to an earlier
 fingerprint does not revive a grant that the rebind revoked. `denied_boot`
