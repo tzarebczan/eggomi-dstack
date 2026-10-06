@@ -75,6 +75,8 @@ Building or customizing the guest OS itself? Follow the [guest-OS build guide](.
 
 Developing without TEE hardware? Use a development image with
 [no-TEE mode and swtpm](./docs/development-without-tee.md).
+For Eggomi's AMD path, follow the
+[simulated SEV-SNP guide](./docs/eggomi/development-with-simulated-snp.md).
 
 ## Architecture
 

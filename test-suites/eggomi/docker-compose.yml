@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  persistence-probe:
+    image: alpine:3.20
+    command:
+      - sh
+      - -euc
+      - |
+        mkdir -p /data /www
+        if [ ! -s /data/marker-id ]; then
+          cat /proc/sys/kernel/random/uuid > /data/marker-id
+        fi
+        count=$$(cat /data/boot-count 2>/dev/null || printf 0)
+        count=$$((count + 1))
+        printf '%s\n' "$$count" > /data/boot-count
+        {
+          printf 'marker_id=%s\n' "$$(cat /data/marker-id)"
+          printf 'boot_count=%s\n' "$$count"
+        } > /www/index.html
+        exec busybox httpd -f -p 8080 -h /www
+    ports:
+      - "8080:8080"
+    volumes:
+      - persistence-data:/data
+
+volumes:
+  persistence-data: {}
