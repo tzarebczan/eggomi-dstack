@@ -52,6 +52,7 @@ def call_rpc(
     channel_private: Optional[bytes] = None,
     registry_path: Optional[Path] = None,
     peer_role: Optional[str] = None,
+    peer_instance: Optional[str] = None,
     timeout: float = 5,
 ) -> Dict[str, Any]:
     """Send one request and return the response object.
@@ -59,6 +60,9 @@ def call_rpc(
     mTLS requires ``expect_server``: trust domain, tenant, role, instance, and
     certificate fingerprint. ``expect_server_role`` is not a substitute. A
     caller that only knows the role is refused before the handshake.
+
+    Unix selects the callee registry row by role and instance. The first row
+    with that role is not the pin.
     """
     if transport == "mtls":
         if cert is None or key is None or ca is None:
@@ -67,6 +71,14 @@ def call_rpc(
             raise RuntimeError("mtls client is missing the callee pin")
     elif transport != "unix":
         raise RuntimeError("transport must be unix or mtls")
+    unix_role = ""
+    unix_instance = ""
+    if transport == "unix":
+        if channel_private is None or registry_path is None:
+            raise RuntimeError("unix client is missing the channel key")
+        unix_role, unix_instance = _unix_peer(
+            expect_server, peer_role, expect_server_role, peer_instance
+        )
     sock = connect(address, timeout=timeout)
     try:
         if transport == "mtls":
@@ -76,14 +88,12 @@ def call_rpc(
             write_frame(sock, {"method": method, "body": body})
             response = read_frame(sock)
         else:
-            if channel_private is None or registry_path is None:
-                raise RuntimeError("unix client is missing the channel key")
-            role = peer_role or expect_server_role
-            if not role:
-                raise RuntimeError("unix client is missing the peer role")
+            assert registry_path is not None and channel_private is not None
             try:
                 session = client_handshake(
-                    sock, channel_private, _peer_public(registry_path, role)
+                    sock,
+                    channel_private,
+                    _peer_public(registry_path, unix_role, unix_instance),
                 )
             except GateDenial as exc:
                 return rpc_error(exc.code)
@@ -250,13 +260,42 @@ def _drain(sock: socket.socket) -> None:
         return
 
 
-def _peer_public(registry_path: Path, role: str) -> bytes:
+def _unix_peer(
+    expect_server: Optional[Dict[str, str]],
+    peer_role: Optional[str],
+    expect_server_role: Optional[str],
+    peer_instance: Optional[str],
+) -> tuple[str, str]:
+    """Resolve the Unix callee to one role and one instance id."""
+    role = peer_role or expect_server_role or ""
+    instance = peer_instance or ""
+    if expect_server is not None:
+        pinned_role = expect_server.get("role") or ""
+        pinned_instance = expect_server.get("instance") or ""
+        if pinned_role and role and pinned_role != role:
+            raise RuntimeError("unix client peer role disagrees with the callee pin")
+        if pinned_instance and instance and pinned_instance != instance:
+            raise RuntimeError("unix client peer instance disagrees with the callee pin")
+        role = role or pinned_role
+        instance = instance or pinned_instance
+    if not role or not instance:
+        raise RuntimeError("unix client is missing the peer instance")
+    return role, instance
+
+
+def _peer_public(registry_path: Path, role: str, instance_id: str) -> bytes:
+    """Return the channel key for one admitted instance of ``role``."""
     registry = load_registry(registry_path)
-    for row in registry.workloads:
-        public = row.get("channel_public")
-        if row.get("role") == role and isinstance(public, str) and public:
-            return bytes.fromhex(public)
-    raise RuntimeError(f"no channel key for {role}")
+    identity = registry.find_instance(instance_id)
+    public = identity.channel_public if identity is not None else None
+    if (
+        identity is None
+        or identity.role != role
+        or not isinstance(public, str)
+        or not public
+    ):
+        raise RuntimeError(f"no channel key for {role} {instance_id}")
+    return bytes.fromhex(public)
 
 
 def _bind(address: str) -> tuple[socket.socket, str]:

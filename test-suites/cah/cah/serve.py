@@ -87,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         authority=authority,
         channel_private=channel_private,
         _lock=threading.Lock(),
+        peer_instance=args.expect_instance or None,
     )
 
     def handler(auth: AuthContext, method: str, body: dict[str, Any]) -> dict[str, Any]:

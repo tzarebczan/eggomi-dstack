@@ -6,15 +6,19 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import ssl
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
+from cah.crypto_lab import generate_private, public_key
 from cah.frame import FrameError, read_frame, write_frame
-from cah.rpc import _wrap_server, call_rpc
+from cah.registry import AdmissionRegistry, bind_process, save_registry
+from cah.rpc import _peer_public, _wrap_server, call_rpc, rpc_ok, serve
 from cah.tls_lab import IssuedCert, LabMaterial, issue_lab
 
 TRUST = "lab.cah"
@@ -111,6 +115,126 @@ class RpcPinTests(unittest.TestCase):
             finally:
                 thread.join(timeout=5)
             self.assertIn("one spiffe uri", str(caught.exception))
+
+
+class UnixPeerPinTests(unittest.TestCase):
+    """Unix clients select the callee by instance, not the first role row."""
+
+    def test_missing_instance_is_refused_before_connect(self) -> None:
+        """A role string is not a Unix callee pin."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError) as caught:
+                call_rpc(
+                    "unix:" + str(Path(tmp) / "missing.sock"),
+                    "Ping",
+                    {},
+                    transport="unix",
+                    channel_private=generate_private(),
+                    registry_path=Path(tmp) / "admission.json",
+                    peer_role="keeper-core",
+                )
+            self.assertIn("peer instance", str(caught.exception))
+
+    def test_named_instance_is_not_the_first_role_row(self) -> None:
+        """A stale keeper row listed first does not supply the channel key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client_key = generate_private()
+            keeper_key = generate_private()
+            stale_key = generate_private()
+            registry = root / "admission.json"
+            save_registry(
+                registry,
+                AdmissionRegistry(
+                    trust_domain="lab.cah",
+                    tenant="tenant-lab-1",
+                    workloads=[
+                        _row("keeper-core", "keeper-stale", public_key(stale_key)),
+                        _row("keeper-core", "keeper-1", public_key(keeper_key)),
+                        _row("omi-runner", "omi-1", public_key(client_key)),
+                    ],
+                ),
+            )
+            self.assertEqual(
+                _peer_public(registry, "keeper-core", "keeper-1"),
+                public_key(keeper_key),
+            )
+            with self.assertRaises(RuntimeError):
+                _peer_public(registry, "keeper-core", "keeper-stale-role")
+            bind_process(registry, "omi-1", os.getpid())
+            calls: list[str] = []
+
+            def handler(
+                auth: object, method: str, body: dict[str, object]
+            ) -> dict[str, object]:
+                del auth, body
+                calls.append(method)
+                return rpc_ok({})
+
+            stop = root / "stop"
+            thread = threading.Thread(
+                target=serve,
+                args=("unix:" + str(root / "rpc.sock"), "unix", registry, handler, stop),
+                kwargs={"role": "keeper-core", "channel_private": keeper_key},
+                daemon=True,
+            )
+            thread.start()
+            address = _wait_unix_ready(root)
+            try:
+                with self.assertRaises(RuntimeError) as caught:
+                    call_rpc(
+                        address,
+                        "Ping",
+                        {},
+                        transport="unix",
+                        channel_private=client_key,
+                        registry_path=registry,
+                        peer_role="keeper-core",
+                        peer_instance="keeper-stale",
+                    )
+                self.assertIn("keyed channel failed", str(caught.exception))
+                self.assertEqual(calls, [])
+                response = call_rpc(
+                    address,
+                    "Ping",
+                    {},
+                    transport="unix",
+                    channel_private=client_key,
+                    registry_path=registry,
+                    peer_role="keeper-core",
+                    peer_instance="keeper-1",
+                )
+            finally:
+                stop.write_text("stop\n", encoding="utf-8")
+                thread.join(timeout=5)
+            self.assertTrue(response["ok"])
+            self.assertEqual(calls, ["Ping"])
+
+
+def _row(role: str, instance_id: str, channel_public: bytes) -> dict[str, object]:
+    return {
+        "role": role,
+        "instance_id": instance_id,
+        "boot_id": f"boot-{instance_id}",
+        "boot_generation": 1,
+        "boot_history": [f"boot-{instance_id}"],
+        "cert_fingerprint": None,
+        "pid": None,
+        "starttime": None,
+        "channel_public": channel_public.hex(),
+    }
+
+
+def _wait_unix_ready(root: Path) -> str:
+    ready = root / "ready" / "keeper-core"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if ready.is_file() and ready.stat().st_size:
+            text = ready.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        time.sleep(0.02)
+    raise AssertionError("keeper did not publish a ready address")
 
 
 def _material(root: Path) -> LabMaterial:

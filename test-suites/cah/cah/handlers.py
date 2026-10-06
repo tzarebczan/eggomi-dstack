@@ -56,6 +56,7 @@ class ServerState:
     authority: Path
     channel_private: Optional[bytes]
     _lock: threading.Lock
+    peer_instance: Optional[str] = None
 
 
 def dispatch(
@@ -270,6 +271,7 @@ def complete_fill(
         expect_server_role="keeper-core",
         channel_private=state.channel_private,
         registry_path=state.registry_path,
+        peer_instance=state.peer_instance,
     )
     if not upstream.get("ok"):
         return rpc_error(str(upstream.get("code", "denied_grant")))

@@ -770,6 +770,15 @@ def _start_server(
                     pin["fingerprint"],
                 ]
             )
+        else:
+            cmd.extend(
+                [
+                    "--expect-role",
+                    "keeper-core",
+                    "--expect-instance",
+                    "keeper-1",
+                ]
+            )
     if role == "keeper-core":
         cmd.extend(["--policy", str(policy_path)])
     if role == "credential-broker":
@@ -873,13 +882,25 @@ def _client_cmd(
         grant_path = state / "fixtures" / f"{case}.grant"
         grant_path.write_text(grant_ref + "\n", encoding="utf-8")
         cmd.extend(["--grant-file", str(grant_path)])
-    cmd.extend(_pin_args(pins))
+    cmd.extend(_pin_args(pins) if pins else _unix_instance_args())
     if transport == "mtls":
         cert, key, ca = _material_paths(state, material, instance)
         cmd.extend(["--cert", str(cert), "--key", str(key), "--ca", str(ca)])
         if stranger:
             cmd.append("--unadmitted-cert")
     return cmd
+
+
+def _unix_instance_args() -> List[str]:
+    """Name each Unix callee. The client does not take the first row of a role."""
+    return [
+        "--keeper-instance",
+        "keeper-1",
+        "--broker-instance",
+        "broker-1",
+        "--connector-instance",
+        "connector-1",
+    ]
 
 
 def _pin_args(pins: Dict[str, Dict[str, str]]) -> List[str]:

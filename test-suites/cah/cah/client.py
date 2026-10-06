@@ -218,7 +218,9 @@ def _fill(args: argparse.Namespace, fixture: Dict[str, Any]) -> Dict[str, Any]:
         field=str(fixture["field"]),
         tenant=str(fixture["tenant"]),
     )
-    keeper_public = _role_public(args.state / "admission.json", "keeper-core")
+    keeper_public = _role_public(
+        args.state / "admission.json", "keeper-core", _peer_instance(args, "keeper-core")
+    )
     proof = guard_proof(private, keeper_public, transcript)
     response = _rpc(
         args,
@@ -272,7 +274,9 @@ def _open_sealed(
     lease = json.loads(lease_path.read_text(encoding="utf-8"))
     live = LiveBinding(
         tenant=str(lease["tenant"]),
-        audience=_role_public(registry_path, "credential-broker").hex(),
+        audience=_role_public(
+            registry_path, "credential-broker", _peer_instance(args, "credential-broker")
+        ).hex(),
         recipient_instance=me.instance_id,
         recipient_boot_generation=me.boot_generation,
         origin=str(fixture["origin"]),
@@ -287,7 +291,9 @@ def _open_sealed(
         resource_handle=str(fixture["resource_handle"]),
         challenge=challenge,
         challenge_mono=challenge_mono,
-        keeper_public=_role_public(registry_path, "keeper-core"),
+        keeper_public=_role_public(
+            registry_path, "keeper-core", _peer_instance(args, "keeper-core")
+        ),
     )
     store = GuardStore(
         args.state / "fence" / args.instance,
@@ -310,13 +316,26 @@ def _load_private(state: Path, instance: str) -> bytes:
     raise RuntimeError("channel key is missing")
 
 
-def _role_public(registry_path: Path, role: str) -> bytes:
+def _peer_instance(args: argparse.Namespace, server_role: str) -> str:
+    """Return the callee instance the launcher named for ``server_role``."""
+    chosen = {
+        "keeper-core": args.keeper_instance,
+        "credential-broker": args.broker_instance,
+        "connector": args.connector_instance,
+    }.get(server_role, "")
+    if not isinstance(chosen, str) or not chosen:
+        raise RuntimeError(f"client is missing the instance for {server_role}")
+    return chosen
+
+
+def _role_public(registry_path: Path, role: str, instance_id: str) -> bytes:
+    """Return the channel key for one admitted instance of ``role``."""
     registry = load_registry(registry_path)
-    for row in registry.workloads:
-        public = row.get("channel_public")
-        if row.get("role") == role and isinstance(public, str) and public:
-            return bytes.fromhex(public)
-    raise RuntimeError(f"no channel key for {role}")
+    identity = registry.find_instance(instance_id)
+    public = identity.channel_public if identity is not None else None
+    if identity is None or identity.role != role or not public:
+        raise RuntimeError(f"no channel key for {role} {instance_id}")
+    return bytes.fromhex(public)
 
 
 def _rpc(
@@ -364,6 +383,9 @@ def _rpc(
         channel_private=channel_private,
         registry_path=registry_path,
         peer_role=peer_role,
+        peer_instance=(
+            _peer_instance(args, server_role) if args.transport == "unix" else None
+        ),
     )
 
 
