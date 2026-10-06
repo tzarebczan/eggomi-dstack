@@ -4,8 +4,10 @@ The launcher creates rows. keeper-core may append a scoped bootstrap row.
 Peer identity is the row recorded for a pid plus start time, or for a
 certificate fingerprint. A self-declared role in an RPC body is not consulted.
 
-Boot generations only advance. Rebinding a pid, start time, or fingerprint
-mints a new generation. An older boot id is refused.
+Boot generations only advance. Rebinding a pid or start time mints a new
+generation. Replacing a fingerprint does too when the row already has a pid
+or start time. Replacing only the fingerprint while pid and start time are
+empty does not. An older boot id is refused.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -162,12 +164,14 @@ def bind_process(
     pid: Optional[int],
     fingerprint: Optional[str] = None,
 ) -> BindResult:
-    """Attach a live pid to an instance.
+    """Attach a live pid, and optionally a certificate, to an instance.
 
-    The first bind records the pid and start time. A later bind with a
-    different pid, start time, or fingerprint advances ``boot_generation``
-    and clears the previous process binding. Callers revoke outstanding
-    grants for that instance when the result kind is ``rebound``.
+    The first process bind records the pid and start time and does not
+    advance ``boot_generation``. A later bind with a different pid, start
+    time, or fingerprint does. Replacing only the fingerprint while pid and
+    start time are still empty is treated as that first bind and does not
+    advance the generation. Callers revoke outstanding grants when the result
+    kind is ``rebound``.
     """
     starttime = process_starttime(pid) if pid is not None else None
 
