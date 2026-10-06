@@ -131,15 +131,21 @@ assert_snp_launch_shape() {
   [[ -s "$sys_config" ]] || die "missing system config at $sys_config"
 
   jq -e '.simulated_tee == "dstack-amd-sev-snp" and .no_tee == true and .swtpm == true' \
-    "$manifest" >/dev/null
-  jq -e '.platform == "dstack-amd-sev-snp"
+    "$manifest" >/dev/null \
+    || die "vm manifest is not a simulated SNP deployment with swtpm"
+  if ! jq -e '.platform == "dstack-amd-sev-snp"
     and (.mock_attestation_seed | test("^[0-9a-fA-F]{64}$"))
-    and (.mr_config | length > 0)
+    and ((.mr_config | fromjson | .version) == 3)
+    and ((.vm_config | fromjson | .mr_config | fromjson | .version) == 3)
     and ((.vm_config | fromjson | .sev_snp_measurement) | length > 0)' \
-    "$simulator" >/dev/null
+    "$simulator" >/dev/null; then
+    die "simulator handoff is missing the SNP measurement or MrConfigV3 binding; the dev image must include measurement.snp.cbor"
+  fi
   jq -e --slurpfile expected "$MOCK_CONFIG" \
-    '.mock_attestation_seed == $expected[0].mock_attestation_seed' "$simulator" >/dev/null
-  jq -e 'has("tee_simulator") | not' "$sys_config" >/dev/null
+    '.mock_attestation_seed == $expected[0].mock_attestation_seed' "$simulator" >/dev/null \
+    || die "simulator seed does not match the job mock-collateral seed"
+  jq -e 'has("tee_simulator") | not' "$sys_config" >/dev/null \
+    || die "sys-config contains a host-selected trust anchor"
 
   [[ -s "$vm_work/hda.img" ]] || die "missing persistent VM disk"
   [[ -s "$vm_work/swtpm/tpm2-00.permall" ]] || die "missing persistent swtpm state"
@@ -163,16 +169,42 @@ eggomi_s0_vm_disk_bytes $disk_bytes
 EOF
 }
 
+run_prod_root_e2e() {
+  if [[ "$RUN_S6" == false ]]; then
+    log "s6 container check disabled by EGGOMI_RUN_S6=false"
+    return
+  fi
+  if [[ "$RUN_S6" == auto ]] && ! command -v docker >/dev/null 2>&1; then
+    log "s6 container check skipped; docker is not installed"
+    return
+  fi
+  set +e
+  "$SUITE_DIR/scripts/s6-faults.sh" prod-root-reject
+  local rc=$?
+  set -e
+  if ((rc == 77)); then
+    if [[ "$RUN_S6" == true ]]; then
+      die "s6 production-root container check was skipped"
+    fi
+    log "s6 container check skipped"
+    return
+  fi
+  if ((rc != 0)); then
+    die "s6 production-root rejection failed"
+  fi
+}
+
 main() {
   mkdir -p "$WORK_DIR"
   need_bin jq
   need_bin curl
-  need_bin qemu-system-x86_64
-  need_bin swtpm
+  need_bin python3
   [[ -r /dev/kvm && -w /dev/kvm ]] \
     || skip "/dev/kvm is not readable and writable; enable KVM or nested virtualization"
   [[ -n "$DEV_IMAGE" ]] || skip "set EGGOMI_DEV_IMAGE to an installed dstack development image"
-  [[ -x "$VMM_CLI_PATH" ]] || skip "missing VMM CLI: $VMM_CLI_PATH"
+  need_bin qemu-system-x86_64
+  need_bin swtpm
+  [[ -f "$VMM_CLI_PATH" ]] || skip "missing VMM CLI: $VMM_CLI_PATH"
   [[ -s "$MOCK_CONFIG" ]] \
     || skip "run '$SUITE_DIR/scripts/mock-collateral.sh generate', merge the emitted VMM config, and restart dstack-vmm"
 
@@ -191,12 +223,7 @@ main() {
   "$SUITE_DIR/scripts/mock-collateral.sh" serve >"$WORK_DIR/mock-collateral.log" 2>&1 &
   COLLATERAL_PID=$!
   wait_for_collateral
-
-  if [[ "$RUN_S6" == true ]] || { [[ "$RUN_S6" == auto ]] && command -v docker >/dev/null; }; then
-    "$SUITE_DIR/scripts/s6-faults.sh" prod-root-reject
-  else
-    log "s6 container check skipped; run scripts/s6-faults.sh on a Docker host"
-  fi
+  run_prod_root_e2e
 
   "${VMM_CLI[@]}" compose \
     --name eggomi-snp-sim \
@@ -206,8 +233,9 @@ main() {
     --public-sysinfo \
     --output "$WORK_DIR/app-compose.json"
 
-  local start_seconds output vm_id boot_seconds
+  local start_seconds output vm_id boot_seconds deploy_rc
   start_seconds=$SECONDS
+  set +e
   output=$("${VMM_CLI[@]}" deploy \
     --name "eggomi-snp-sim-${USER:-ci}" \
     --image "$DEV_IMAGE" \
@@ -216,8 +244,16 @@ main() {
     --memory "${EGGOMI_MEMORY:-3G}" \
     --disk "${EGGOMI_DISK:-10G}" \
     --port "tcp:127.0.0.1:${APP_PORT}:8080" \
-    --simulated-tee dstack-amd-sev-snp)
+    --simulated-tee dstack-amd-sev-snp 2>&1)
+  deploy_rc=$?
+  set -e
   printf '%s\n' "$output" | tee "$WORK_DIR/deploy.log"
+  if ((deploy_rc != 0)); then
+    if grep -q 'Port mapping is disabled' <<<"$output"; then
+      die "port mapping is disabled; set [cvm.port_mapping] enabled = true in vmm.toml and restart dstack-vmm"
+    fi
+    die "deploy failed"
+  fi
   vm_id=$(awk -F': ' '/^Created VM with ID: / {print $2}' <<<"$output" | tail -n1)
   [[ -n "$vm_id" ]] || die "could not parse deployed VM id"
   printf '%s\n' "$vm_id" >"$WORK_DIR/vm-id"

@@ -93,18 +93,22 @@ representative baselines exist.
 
 ### S6: fail-closed hooks
 
-The first milestone wires two existing production-path checks:
+The first milestone wires the existing production-path checks:
 
 - `measurement-mismatch` runs the KMS SNP binding test that mutates a verified
   launch measurement and requires rejection;
+- `prod-root-unit` generates mock SNP evidence and requires the production
+  ARKs in `sev-snp-qvl` to reject it;
 - `prod-root-reject` generates SNP-shaped evidence through
   `dstack-tee-simulator`, accepts it with matching mock roots, then requires
-  rejection with built-in production roots.
+  rejection by `dstack-verifier` configured with its built-in production roots.
+  This command needs privileged Docker and exits 77 when Docker is unavailable.
 
 Run them with:
 
 ```bash
 ./test-suites/eggomi/scripts/s6-faults.sh measurement-mismatch
+./test-suites/eggomi/scripts/s6-faults.sh prod-root-unit
 ./test-suites/eggomi/scripts/s6-faults.sh prod-root-reject
 ```
 

@@ -83,12 +83,21 @@ qemu_path = "/usr/bin/qemu-system-x86_64"
 [cvm.networking]
 mode = "user"
 
+[cvm.port_mapping]
+enabled = true
+
 [supervisor]
 exe = "/home/USER/.local/bin/supervisor"
 ```
 
+Port mapping is disabled in the sample `vmm.toml`. The persistence probe needs
+it so QEMU can publish the guest's port 8080. A deployment that requests a
+port while it is disabled fails with `Port mapping is disabled`.
+
 Start the VMM only after adding the generated simulator table. Simulation is
-still selected per VM, not globally.
+still selected per VM, not globally. The CLI discovers that VMM when it is
+the only one running; set `DSTACK_VMM_URL` to the address shown by
+`dstack vmm ls` when several are present.
 
 ## Deploy the SNP simulator
 
@@ -128,9 +137,15 @@ The command prints `Created VM with ID: VM_ID`. Wait until:
 dstack info VM_ID
 ```
 
-reports `Status: running` and `Boot Progress: done`. The VMM writes an
-instance-specific `.tee-simulator.json`; its `platform` is
-`dstack-amd-sev-snp`, and its `vm_config` contains `sev_snp_measurement`.
+reports `Status: running` and `Boot Progress: done`. The guest must be able
+to pull `alpine:3.20` for the persistence probe. The VMM writes an
+instance-specific `.tee-simulator.json`. Its `platform` is
+`dstack-amd-sev-snp`, and its `vm_config` contains both `sev_snp_measurement`
+and the MrConfigV3 document. Current development images include
+`measurement.snp.cbor`; the VMM attaches that launch measurement for a
+simulated SNP boot even when the host has no SNP hardware. The simulator
+signs `MEASUREMENT` from those inputs, which is the value the verifier
+recomputes. QEMU itself still runs with `no_tee`.
 
 The scripted form performs these checks and records boot metrics:
 

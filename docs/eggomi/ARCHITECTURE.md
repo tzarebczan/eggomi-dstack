@@ -71,7 +71,11 @@ dstack already supplies cryptographically consistent development evidence:
 - dstack-vmm launches QEMU with `no_tee`, uses swtpm, and selects simulation per
   VM with `--simulated-tee dstack-amd-sev-snp`;
 - verifiers explicitly opt into roots derived from the same throwaway seed
-  with `insecure_allow_external_trust_anchors = true`.
+  with `insecure_allow_external_trust_anchors = true`;
+- the VMM still embeds `sev_snp_measurement` and the MrConfigV3 document in
+  `vm_config` for `--simulated-tee dstack-amd-sev-snp`. The simulator signs
+  `MEASUREMENT` from those inputs, and the verifier recomputes the same value.
+  `no_tee` changes the QEMU machine, not the attested launch document.
 
 The simulator exercises the normal SNP parsing and verification code. It does
 not create a confidential boundary. Production roots must reject every

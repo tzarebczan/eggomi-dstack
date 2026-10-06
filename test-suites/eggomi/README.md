@@ -34,10 +34,16 @@ Run the smoke:
 
 ```bash
 export EGGOMI_DEV_IMAGE=dstack-dev-<version>
-# Set this only when VMM CLI auto-discovery does not find the intended VMM.
-export DSTACK_VMM_URL=http://127.0.0.1:9080
+# Set this only when `dstack vmm ls` finds more than one VMM. Use that
+# command's address, which may be an HTTP URL or a unix socket.
+# export DSTACK_VMM_URL=unix:$HOME/.dstack-vmm/run/vmm.sock
 ./test-suites/eggomi/scripts/s0-sim-smoke.sh
 ```
+
+Enable `[cvm.port_mapping]` before deploying. S0 publishes the persistence
+probe on `127.0.0.1:18089`, and the VMM rejects that request while port
+mapping is disabled. The development image must also contain
+`measurement.snp.cbor`, which current `dstack-dev` builds do.
 
 S0 starts the mock AMD-KDS-shaped collateral service, creates a TPM-backed
 state probe, deploys it with
@@ -94,13 +100,24 @@ check the host without deploying:
 ./test-suites/eggomi/scripts/s0-sim-smoke.sh --preflight
 ```
 
-The production-root S6 hook needs privileged Docker but not KVM. The
-measurement-mismatch hook is a focused Rust unit test and needs neither:
+S6 has two production-root checks. The default command runs both unit hooks
+and then the container check when Docker is usable:
 
 ```bash
+./test-suites/eggomi/scripts/s6-faults.sh
 ./test-suites/eggomi/scripts/s6-faults.sh measurement-mismatch
+./test-suites/eggomi/scripts/s6-faults.sh prod-root-unit
 ./test-suites/eggomi/scripts/s6-faults.sh prod-root-reject
 ```
+
+`prod-root-unit` asks the production SEV-SNP quote verifier to reject mock
+evidence signed under a throwaway ARK. It needs Cargo, not KVM or Docker.
+`prod-root-reject` runs the existing privileged attestation container: the
+simulator produces SNP evidence, mock roots accept it, and the verifier's
+built-in production roots reject it. Without Docker or a reachable daemon
+that command exits 77. `./s6-faults.sh` without arguments keeps the unit
+result and records that skip instead of treating it as a passing container
+run.
 
 ## Nested virtualization
 

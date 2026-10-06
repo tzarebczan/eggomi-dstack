@@ -5,8 +5,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-SUITE_DIR="$ROOT/test-suites/eggomi"
-STATE_DIR=${EGGOMI_STATE_DIR:-"$SUITE_DIR/.state"}
+STATE_DIR=${EGGOMI_STATE_DIR:-"$ROOT/test-suites/eggomi/.state"}
 WORK_DIR="$STATE_DIR/work"
 MOCK_CONFIG="$STATE_DIR/mock-roots/tee-simulator.json"
 
@@ -25,11 +24,25 @@ measurement_mismatch() {
     -p dstack-kms accepts_recomputed_matching_measurement_and_rejects_mismatch
 }
 
+prod_root_unit() {
+  log "checking mock SNP evidence against production ARKs"
+  cargo test --manifest-path "$ROOT/dstack/Cargo.toml" \
+    -p mock-attestation --lib generated_report_is_rejected_by_production_arks
+  mkdir -p "$WORK_DIR"
+  cat >"$WORK_DIR/s6-metrics.prom" <<EOF
+# Production ARKs rejected cryptographically valid mock SNP evidence.
+eggomi_s6_production_root_rejected 1
+eggomi_s6_container_e2e_ran 0
+EOF
+}
+
 prod_root_reject() {
   command -v docker >/dev/null 2>&1 \
-    || { printf 'skip: Docker is required for the production-root rejection hook\n' >&2; exit 77; }
+    || { printf 'skip: docker is required for the production-root container check\n' >&2; return 77; }
   docker compose version >/dev/null 2>&1 \
-    || { printf 'skip: the Docker Compose plugin is required\n' >&2; exit 77; }
+    || { printf 'skip: the Docker Compose plugin is required\n' >&2; return 77; }
+  docker info >/dev/null 2>&1 \
+    || { printf 'skip: the Docker daemon is not reachable\n' >&2; return 77; }
   mkdir -p "$WORK_DIR"
 
   local seed started elapsed output
@@ -66,16 +79,27 @@ prod_root_reject() {
 eggomi_s6_attestation_e2e_seconds $elapsed
 eggomi_s6_mock_root_accepted 1
 eggomi_s6_production_root_rejected 1
+eggomi_s6_container_e2e_ran 1
 EOF
   log "production roots rejected the simulated SNP evidence"
 }
 
 case "${1:-all}" in
   measurement-mismatch) measurement_mismatch ;;
+  prod-root-unit) prod_root_unit ;;
   prod-root-reject) prod_root_reject ;;
   all)
     measurement_mismatch
+    prod_root_unit
+    set +e
     prod_root_reject
+    rc=$?
+    set -e
+    if ((rc == 77)); then
+      log "container production-root check skipped"
+    elif ((rc != 0)); then
+      exit "$rc"
+    fi
     ;;
-  *) die "usage: $0 {all|measurement-mismatch|prod-root-reject}" ;;
+  *) die "usage: $0 {all|measurement-mismatch|prod-root-unit|prod-root-reject}" ;;
 esac

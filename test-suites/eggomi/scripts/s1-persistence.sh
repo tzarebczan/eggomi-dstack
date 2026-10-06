@@ -23,6 +23,11 @@ die() {
   exit 1
 }
 
+skip() {
+  printf 'skip: %s\n' "$*" >&2
+  exit 77
+}
+
 cleanup() {
   if [[ -n "$COLLATERAL_PID" ]] && kill -0 "$COLLATERAL_PID" 2>/dev/null; then
     kill "$COLLATERAL_PID" 2>/dev/null || true
@@ -53,7 +58,7 @@ wait_for_status() {
     fi
     sleep 3
   done
-  die "timed out waiting for VM state $wanted"
+  die "timed out waiting for vm state $wanted"
 }
 
 wait_for_probe_change() {
@@ -75,8 +80,15 @@ wait_for_probe_change() {
 }
 
 main() {
-  [[ -s "$STATE_DIR/last-run.env" ]] \
-    || die "missing S0 state; run scripts/s0-sim-smoke.sh first"
+  if [[ ! -s "$STATE_DIR/last-run.env" ]]; then
+    if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+      skip "/dev/kvm is not readable and writable, and no S0 VM exists"
+    fi
+    if [[ -z "${EGGOMI_DEV_IMAGE:-}" ]]; then
+      skip "EGGOMI_DEV_IMAGE is unset and no S0 VM exists; run scripts/s0-sim-smoke.sh first"
+    fi
+    die "missing S0 state; run scripts/s0-sim-smoke.sh first"
+  fi
   # shellcheck disable=SC1091
   source "$STATE_DIR/last-run.env"
   local vm_id=${1:-$EGGOMI_VM_ID}
@@ -91,6 +103,8 @@ main() {
   marker_before=$(awk -F= '$1 == "marker_id" {print $2}' "$WORK_DIR/probe-before.txt")
   count_before=$(awk -F= '$1 == "boot_count" {print $2}' "$WORK_DIR/probe-before.txt")
   instance_before=$("${VMM_CLI[@]}" info "$vm_id" --json | jq -er '.instance_id')
+  [[ -n "$instance_before" && "$instance_before" != null ]] \
+    || die "S0 VM has no instance id"
 
   "$SUITE_DIR/scripts/mock-collateral.sh" serve >"$WORK_DIR/mock-collateral-s1.log" 2>&1 &
   COLLATERAL_PID=$!
