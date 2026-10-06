@@ -280,3 +280,11 @@ path = [
 ]
 SPDX-FileCopyrightText = "Copyright (c) 2026 Phala Network <dstack@phala.network>"
 SPDX-License-Identifier = "Apache-2.0"
+
+# Official Noise KK test vectors, copied as published (each entry names its
+# source file and commit): cacophony is Unlicense, snow is Apache-2.0 OR MIT.
+[[annotations]]
+path = "test-suites/cah/vectors/noise-kk-upstream.json"
+precedence = "override"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "Unlicense AND (Apache-2.0 OR MIT)"

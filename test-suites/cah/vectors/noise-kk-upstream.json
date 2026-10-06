@@ -1,0 +1,77 @@
+{
+  "format": "eggomi-noise-upstream/v1",
+  "about": "Noise_KK_25519_ChaChaPoly_SHA256, the keeper's compartment channel (apps/desktop/src/keeper/cah/channel.ts). Each entry is copied as published from the file `source` names, with `source` added. Run by packages/noise/src/kk.test.ts.",
+  "upstream": [
+    {
+      "source": "https://github.com/haskell-cryptography/cacophony/blob/8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247/vectors/cacophony.txt",
+      "protocol_name": "Noise_KK_25519_ChaChaPoly_SHA256",
+      "init_prologue": "4a6f686e2047616c74",
+      "init_static": "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+      "init_ephemeral": "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+      "init_remote_static": "31e0303fd6418d2f8c0e78b91f22e8caed0fbe48656dcf4767e4834f701b8f62",
+      "resp_prologue": "4a6f686e2047616c74",
+      "resp_static": "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+      "resp_ephemeral": "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+      "resp_remote_static": "6bc3822a2aa7f4e6981d6538692b3cdf3e6df9eea6ed269eb41d93c22757b75a",
+      "handshake_hash": "24c6b51ecb76277140ca018b5985bc9f03de321dae2d34dcae433dafef0131d9",
+      "messages": [
+        {
+          "payload": "4c756477696720766f6e204d69736573",
+          "ciphertext": "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79440177015efc1fe7a37c629af7120a96274e6ab7afcc9261901d0e09ae32a5bb96"
+        },
+        {
+          "payload": "4d757272617920526f746862617264",
+          "ciphertext": "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f144808843b274d3429adc47ca093ba63ef90f8da89fda108db471dccfa4894aa7b00003"
+        },
+        {
+          "payload": "462e20412e20486179656b",
+          "ciphertext": "966b05bc69ec01b8454d3160a214e6f24a3d884eb31ec2408af63f"
+        },
+        {
+          "payload": "4361726c204d656e676572",
+          "ciphertext": "0ad887fba4f611bbb4afe44ba3556b8164332ca7d5934634d63d80"
+        },
+        {
+          "payload": "4a65616e2d426170746973746520536179",
+          "ciphertext": "012b28ae646ae7830e2c5472cb023eab071c1db3d8413ec69b513b83832f974c2d"
+        },
+        {
+          "payload": "457567656e2042f6686d20766f6e2042617765726b",
+          "ciphertext": "bb3e6a48160d9c5971d37f975727294e0d868342db31832e54d07191ab0ca3c3703b5ed3d9"
+        }
+      ]
+    },
+    {
+      "source": "https://github.com/mcginty/snow/blob/8ac60f51cfe3e010c84f0a454cc575ad9204fa12/tests/vectors/snow.txt",
+      "protocol_name": "Noise_KK_25519_ChaChaPoly_SHA256",
+      "init_prologue": "5468657265206973206e6f20726967687420616e642077726f6e672e2054686572652773206f6e6c792066756e20616e6420626f72696e672e",
+      "init_psks": [],
+      "init_static": "9ec880ae6e9dc37277b4b7cc43a9981a2a58428648536941c787f34c840ae4b4",
+      "init_ephemeral": "09469832d23dbaa396cb1e8c42c74ea73e3f88eaf39a1b9e89cc6528bd163f9a",
+      "init_remote_static": "673291fd3e40a0ae3008788a0e8b62a81bbabff2464bc5e76b08a9824e539c50",
+      "resp_prologue": "5468657265206973206e6f20726967687420616e642077726f6e672e2054686572652773206f6e6c792066756e20616e6420626f72696e672e",
+      "resp_psks": [],
+      "resp_static": "2f292fe63d73808a2e5307a62428e243ba02ce8b70c949a58a4c70312fb038b5",
+      "resp_ephemeral": "64fd9f17061c66df61f6e5c15ce85dbcd3aaee6e3a9f87989dc9147c6f5cb64a",
+      "resp_remote_static": "3198032f853c7321e63685c7331077716ed312e9fbb4822bb4dbfbcaa4590e08",
+      "messages": [
+        {
+          "payload": "4d1f91e210b2c264713e73509808c3f6d99ca3bb115001388e630b1356a24693",
+          "ciphertext": "311304998133430ee0668c0c91cbdc445cbb3a526457b0c0b7d9dc6789be0904f7d451b7aba0f3031b46fca709b3eed813d6d1080447720cdf86bd9391c0359c717211fbcdda474c03ea5d8d03c33722"
+        },
+        {
+          "payload": "914a3388cb8e5ef4e3d4b7ba0fc4bc0a0cbc7ff41eabdb7c9c501b4d92355fbf",
+          "ciphertext": "59028e838fa2ca7a3fc8d48b5c6379286b61507d4c91e30a0ad387164b0229060e30d119b6845417d128231555ee8666ff8beffe931b1d8296d92189472ec01cffdf25074a38a63a555bb43c749e8d05"
+        },
+        {
+          "payload": "e3ecca19cd0e12b0607470b7b13780428e0bbe6deb02c91ecd1d5c832128258c",
+          "ciphertext": "9faaf3dc38e529089dfb9e3b830c4e014fa7204b7f52288b8f7aa6f5107e556246c2004d0236920739434810979eef50"
+        },
+        {
+          "payload": "517c1116052039051444d2b76d00886bea074d1d730f1e3489457496cdf4d8ca",
+          "ciphertext": "007d8b6d59a12d95c335ccbd4d31486f86020b59889b8ea159b4fdaaee9334f2b9143498aeffa34219fa6c3136361b66"
+        }
+      ]
+    }
+  ]
+}

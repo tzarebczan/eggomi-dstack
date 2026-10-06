@@ -19,9 +19,11 @@ Eggomi `infra/dstack` is in the [Eggomi profile](eggomi-profile.md).
 Host-native processes (evidence E1, deployment class L) talk over a keyed
 channel. Unix admission uses `SO_PEERPIDFD` (Linux 6.5+, no `SO_PEERCRED`
 fallback) only to decide whether the handshake may start. After that, every
-frame is AEAD under the workload's registered X25519 key. Lab mTLS is the
-keyed channel on TCP. Both transports use the same admission registry. The
-launcher writes that registry. Servers read it from disk.
+frame is a Noise KK transport message keyed to the workload's registered
+X25519 key (prologue `eggomi/cah-channel/v1`, Eggomi's wire). Lab mTLS is
+the keyed channel on TCP. Both transports use the same admission registry.
+The launcher writes that registry and signs every row (`launcher_sig`).
+Servers read it from disk and ignore a row whose signature does not verify.
 
 `keeper-core` loads the current keeper policy revision on every `PrepareUse`.
 The requester cannot choose origin, lease, audience, field, tenant, or
@@ -35,7 +37,8 @@ keeper public key in the registry. An `omi-runner` call to the broker is
 admitted browser that presents the same `grant_ref` is `denied_recipient`
 at resolve. Those are different checks. A boot id only advances. A pid
 rebind, a certificate fingerprint change, and a channel public key change
-all advance `boot_generation` and revoke that instance's issued grants. A
+all advance `boot_generation` (so does a first bind onto an empty row) and
+revoke that instance's issued grants. A
 generation mismatch is `denied_boot`. An unadmitted certificate and a
 connector with no allow edge are refused. Role, instance, and frame
 mismatches leave the grant issued. A second redeem of a consumed grant
@@ -60,7 +63,8 @@ boot, when the host can launch it, is `vm_e2e`.
 
 ## Run
 
-From the repository root, with Python 3.12:
+From the repository root, with Python 3.12 and `cryptography`
+(`pip install -r test-suites/cah/requirements.txt`):
 
 ```bash
 ./test-suites/cah/scripts/cah-launch.sh
@@ -98,7 +102,8 @@ the certificate fingerprint. A certificate absent from the registry is
 `denied_unadmitted`.
 
 Non-keeper processes run in a user and mount namespace that hides
-`state/authority` (policy, journal, lab CA key) and other role keys.
+`state/authority` (policy, journal, lab CA key), `state/launcher` (the
+row-signing key and key-owner memory), and other role keys.
 `admission.json` is read-only inside that namespace. Keeper stays unconfined
 because it owns those files. The processes still share a uid, and same-uid
 ptrace is not additionally blocked. That is an E1 limit. It is not a

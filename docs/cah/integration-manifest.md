@@ -54,9 +54,10 @@ compartment ports.
 
 | Port | Contract |
 | --- | --- |
-| RPC | 4-byte big-endian length plus UTF-8 JSON, maximum 1 MiB. Responses are `{ok, code, body}`. Errors use an empty body. |
+| RPC (Unix) | Noise KK frames: u16 big-endian length (1..65535). `0x01 ‖ KK message` for the handshake, `0x00 ‖ ASCII code` for a pre-channel refusal, then one transport message per frame carrying `{"id","method","params"}` and `{"id","result"}` or `{"id","error":{"code","message"}}`. |
+| RPC (lab mTLS) | 4-byte big-endian length plus UTF-8 JSON, maximum 1 MiB. Responses are `{ok, code, body}`. Errors use an empty body. |
 | Addresses | `unix:<path>` and `tcp:<host>:<port>`. Servers bind `tcp` on `127.0.0.1:0` and publish the chosen address in `ready/<role>`. |
-| Unix identity | `SO_PEERPIDFD` (constant 77). No `SO_PEERCRED` fallback. pid and start time only gate setup. The keyed channel then proves the registered X25519 key. uid must equal the server uid. |
+| Unix identity | `SO_PEERPIDFD` (constant 77). No `SO_PEERCRED` fallback. pid and start time only gate setup. Noise KK then proves the registered X25519 key. uid must equal the server uid. The row must carry a valid `launcher_sig`. |
 | Lab mTLS | TLS 1.3, client certificates required, session tickets disabled. Hostname check is off because the SPIFFE URI SAN is the identity. The mTLS broker path is `vsock.placeholder(cid=3, port=5200)`, label `vsock:3:5200`. `open_vsock()` raises `VsockUnavailable`. `AF_VSOCK` is not opened. |
 | Access graph | `test-suites/cah/profiles/eggomi/service-access.json` (`service-access/v1`, default deny). Admission is a launcher write, not a keeper method. |
 | Use-grant | `workload-use-grant/v1`. Wire value is an opaque hex reference. Server-side binding is requester, recipient possession, policy, destination, task, and lease. Example: `test-suites/cah/examples/workload-use-grant.json`. A null fingerprint in an old example is not a skip. |
@@ -111,7 +112,8 @@ VM has no `/dev/sev`, uid 1000 cannot open `/dev/kvm`, and S0 was not launched.
 | Instance keys | `state/authority/certs/<instance>.key` and `state/roles/<instance>/key.pem` (mode 0600), mTLS only. A confined process keeps only its own role directory. |
 | Fill secret | `state/authority/fill-secret` (`cah-synthetic-fill-v1`, mode 0600), read by keeper-core only. Sealed once per grant to the recipient guard. The broker relays ciphertext. The opened value appears only in `results/positive_fill.json` and `results/copied_owner_fill.json`. |
 | Grant store | `state/authority/grants.json`, with the journal and keeper epoch at `state/host-fence/` (mode 0600). Restoring `authority/` does not revive a consumed grant. |
-| Registry | `state/admission.json`, lock `admission.json.lock`. Confined processes see it read-only. |
+| Registry | `state/admission.json`, lock `admission.json.lock`. Confined processes see it read-only. Every row is signed (`launcher_sig`). |
+| Launcher key | `state/launcher/row-signing.key` (Ed25519, mode 0600) and `state/launcher/key-owners.jsonl`. Hidden from every confined process. Readers get the public key as `--launcher-public`. |
 
 | Gate | Status |
 | --- | --- |

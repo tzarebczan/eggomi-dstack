@@ -58,7 +58,8 @@ presents the same reference is `denied_recipient` at resolve, and the grant
 stays `issued` for the bound recipient. A certificate-fingerprint change is
 a rebind, with or without a pid: `boot_generation` advances and that
 instance's issued grants are revoked. Binding the previous fingerprint again
-does not restore them. A channel public key change follows the same rule.
+does not restore them. A channel public key change follows the same rule, and
+so does the first bind of a pid, fingerprint or key onto an empty row.
 A boot-generation mismatch is terminal `denied_boot`.
 `ReportOutcome` accepts `filled`, `refused`, or `unknown`. The first terminal
 report for a grant is final. `QueryOutcome` returns that record to the

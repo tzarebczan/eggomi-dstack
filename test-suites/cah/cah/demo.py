@@ -29,6 +29,7 @@ from .confine import popen_confined
 from .crypto_lab import generate_private, public_key, wrap_private
 from .grants import host_fence_paths, revoke_instance_grants
 from .guard import GuardStore
+from .launcher import LauncherSigner, launcher_dir
 from .metrics import load_schema, measurement, sum_present, validate_record
 from .policy import load_policy, publish_revision
 from .registry import (
@@ -741,6 +742,8 @@ def _start_server(
         "cah.serve",
         "--role",
         role,
+        "--launcher-public",
+        _launcher_public(state),
         "--state",
         str(state),
         "--transport",
@@ -832,6 +835,7 @@ def _spawn(
     return popen_confined(
         cmd,
         hide_dirs=[
+            launcher_dir(state / "admission.json"),
             state / "authority",
             state / "roles",
             state / "fence",
@@ -865,6 +869,8 @@ def _client_cmd(
         sys.executable,
         "-m",
         "cah.client",
+        "--launcher-public",
+        _launcher_public(state),
         "--state",
         str(state),
         "--case",
@@ -1032,14 +1038,20 @@ def _bootstrap_fields() -> Dict[str, str]:
 
 def _bind(state: Path, instance: str, pid: int) -> BindResult:
     result = bind_process(state / "admission.json", instance, pid)
+    if result.kind == "unchanged":
+        return result
+    # Every bind advances boot_generation, the first one included, so every
+    # bind revokes the instance's issued grants. The guard fence (its
+    # wrapped key) moves only on a rebind: the first bind is the key the
+    # launcher provisioned.
+    journal_path, epoch_path = host_fence_paths(state / "authority")
+    revoke_instance_grants(
+        state / "authority" / "grants.json",
+        journal_path,
+        epoch_path,
+        instance,
+    )
     if result.kind == "rebound":
-        journal_path, epoch_path = host_fence_paths(state / "authority")
-        revoke_instance_grants(
-            state / "authority" / "grants.json",
-            journal_path,
-            epoch_path,
-            instance,
-        )
         fence = state / "fence" / instance
         if fence.is_dir():
             wrapped = state / "roles" / instance / "channel.key.wrapped"
@@ -1145,6 +1157,11 @@ def _write_registry(
             trust_domain=TRUST_DOMAIN, tenant=TENANT, workloads=workloads
         ),
     )
+
+
+def _launcher_public(state: Path) -> str:
+    """Return the launcher row key every compartment is configured with."""
+    return LauncherSigner.at(launcher_dir(state / "admission.json")).public.hex()
 
 
 def _write_bootstrap(state: Path) -> str:

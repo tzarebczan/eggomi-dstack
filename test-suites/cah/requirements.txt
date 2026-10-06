@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+
+# Ed25519 for launcher_sig, X25519 and ChaCha20-Poly1305 for the Noise KK channel.
+cryptography>=42

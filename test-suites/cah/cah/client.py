@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 
 from .crypto_lab import generate_private, public_key
 from .guard import GuardStore
+from .launcher import parse_public, trust_launcher_key
 from .registry import load_registry
 from .rpc import call_rpc
 from .seal import LiveBinding, guard_proof, proof_transcript
@@ -51,7 +52,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--broker-fp", default="")
     parser.add_argument("--connector-instance", default="")
     parser.add_argument("--connector-fp", default="")
+    parser.add_argument(
+        "--launcher-public",
+        required=True,
+        help="the launcher's Ed25519 row key, 64 hex characters",
+    )
     args = parser.parse_args(argv)
+    try:
+        trust_launcher_key(parse_public(args.launcher_public))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if args.mode == "agent":
         return _agent(args)
     if not args.unadmitted_cert:

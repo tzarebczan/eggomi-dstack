@@ -10,6 +10,10 @@ Boot generations only advance. Rebinding a pid, a start time, a
 certificate fingerprint, or a channel public key mints a new generation. A
 fingerprint change is a rebind whether or not the row has a pid. Returning
 to an earlier channel key is another rebind. An older boot id is refused.
+
+Every row the launcher saves carries ``launcher_sig`` (``launcher.py``). A
+reader only returns rows whose signature verifies under a launcher key this
+process trusts. An unsigned or badly signed row is no identity.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -21,10 +25,20 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, FrozenSet, Iterator, List, Optional, Tuple
+
+from .launcher import (
+    KeyOwners,
+    LauncherSigner,
+    RowNotSignable,
+    fsync_dir,
+    launcher_dir,
+    row_attributed,
+)
 
 
 class BootRollback(ValueError):
@@ -71,6 +85,44 @@ class AdmissionRegistry:
     trust_domain: str
     tenant: str
     workloads: List[Dict[str, object]]
+    source: Optional[str] = None
+
+    def attributed(self) -> List[Dict[str, object]]:
+        """Return the rows whose ``launcher_sig`` verifies.
+
+        Lookups only see these rows. An instance, channel key, fingerprint
+        or pid with start time that two attributed rows claim is no
+        identity for either, as in Eggomi's ``readRegistry``. A row whose
+        generation is below one this process already saw for the instance,
+        or whose boot id the instance already left, is no identity either
+        (``_floors``), so replaying an older signed row does not bring an
+        old incarnation back. The raw ``workloads`` list is the launcher's
+        own view, used when it rewrites the file.
+        """
+        rows = [
+            row
+            for row in self.workloads
+            if isinstance(row, dict)
+            and row_attributed(self.trust_domain, self.tenant, row)
+        ]
+        # Floors first, for every signed row: a row refused below for a
+        # shared claim still raises them, as in Eggomi's readRegistry.
+        source = self.source
+        floor_ok = [
+            True
+            if source is None
+            else _floors.admit(source, self.trust_domain, self.tenant, row)
+            for row in rows
+        ]
+        counts: Dict[str, int] = {}
+        for row in rows:
+            for claim in _claims(row):
+                counts[claim] = counts.get(claim, 0) + 1
+        return [
+            row
+            for row, ok in zip(rows, floor_ok)
+            if ok and all(counts[c] == 1 for c in _claims(row))
+        ]
 
     def find_pid(self, pid: int) -> Optional[WorkloadIdentity]:
         """Return the workload bound to this pid and its current start time.
@@ -78,7 +130,7 @@ class AdmissionRegistry:
         A recycled pid with a different ``/proc/<pid>/stat`` start time does
         not inherit the old row.
         """
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("pid") != pid:
                 continue
             stored = row.get("starttime")
@@ -97,7 +149,7 @@ class AdmissionRegistry:
         """Return the workload bound to this registered channel key."""
         if not public_hex:
             return None
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("channel_public") == public_hex:
                 return self._identity(row)
         return None
@@ -106,14 +158,14 @@ class AdmissionRegistry:
         """Return the workload bound to a certificate fingerprint."""
         if not fingerprint:
             return None
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("cert_fingerprint") == fingerprint:
                 return self._identity(row)
         return None
 
     def find_instance(self, instance_id: str) -> Optional[WorkloadIdentity]:
         """Return the admitted instance, even when no process is bound."""
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("instance_id") == instance_id:
                 return self._identity(row)
         return None
@@ -139,7 +191,9 @@ class AdmissionRegistry:
                 if isinstance(starttime, int) and not isinstance(starttime, bool)
                 else None
             ),
-            channel_public=str(channel) if isinstance(channel, str) and channel else None,
+            channel_public=str(channel)
+            if isinstance(channel, str) and channel
+            else None,
         )
 
 
@@ -161,7 +215,9 @@ def load_registry(path: Path) -> AdmissionRegistry:
         return AdmissionRegistry(
             trust_domain="lab.cah", tenant="tenant-lab-1", workloads=[]
         )
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    with _write_lock(path, fcntl.LOCK_SH):
+        text = path.read_text(encoding="utf-8")
+    raw = json.loads(text)
     if raw.get("schema_version") != "admission-registry/v1":
         raise ValueError("admission registry schema is not admission-registry/v1")
     workloads = raw.get("workloads")
@@ -171,7 +227,80 @@ def load_registry(path: Path) -> AdmissionRegistry:
         trust_domain=str(raw["trust_domain"]),
         tenant=str(raw["tenant"]),
         workloads=workloads,
+        source=str(path.resolve()),
     )
+
+
+class RegistryTampered(ValueError):
+    """The file holds a row the launcher did not sign. It refuses to rewrite it."""
+
+
+def load_for_launcher(path: Path, signer: LauncherSigner) -> AdmissionRegistry:
+    """Load the registry for a launcher write.
+
+    Every row must verify under ``signer`` and name a distinct instance.
+    Otherwise the launcher would re-sign a row someone else put in the
+    file, so the write is refused with ``RegistryTampered``.
+    """
+    registry = load_registry(path)
+    seen: set[object] = set()
+    for row in registry.workloads:
+        if not isinstance(row, dict) or not row_attributed(
+            registry.trust_domain, registry.tenant, row, keys=[signer.public]
+        ):
+            raise RegistryTampered("registry holds a row the launcher did not sign")
+        if row.get("instance_id") in seen:
+            raise RegistryTampered("registry holds two rows for one instance")
+        seen.add(row.get("instance_id"))
+    return registry
+
+
+class _Floors:
+    """What this process saw of each instance: generations only move forward.
+
+    Kept in memory per registry file, like Eggomi's ``Watermarks``. A
+    restarted reader starts empty.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: Dict[
+            Tuple[str, str], Tuple[int, str, FrozenSet[str], Tuple[object, ...]]
+        ] = {}
+
+    def admit(
+        self, source: str, trust_domain: str, tenant: str, row: Dict[str, object]
+    ) -> bool:
+        key = (source, str(row.get("instance_id")))
+        incarnation = (trust_domain, tenant) + tuple(
+            row.get(name) for name in _IDENTITY_FIELDS
+        )
+        generation = _generation(row.get("boot_generation"))
+        boot_id = str(row.get("boot_id"))
+        history = row.get("boot_history")
+        left = (
+            {str(b) for b in history if b != boot_id}
+            if isinstance(history, list)
+            else set()
+        )
+        with self._lock:
+            seen = self._seen.get(key)
+            if seen is not None:
+                floor, floor_boot, floor_left, floor_incarnation = seen
+                if generation < floor:
+                    return False
+                if generation == floor and incarnation != floor_incarnation:
+                    return False
+                if boot_id != floor_boot and boot_id in floor_left:
+                    return False
+                left |= floor_left
+                if boot_id != floor_boot:
+                    left.add(floor_boot)
+            self._seen[key] = (generation, boot_id, frozenset(left), incarnation)
+            return True
+
+
+_floors = _Floors()
 
 
 def bind_process(
@@ -182,11 +311,12 @@ def bind_process(
 ) -> BindResult:
     """Attach a live pid, and optionally a certificate, to an instance.
 
-    The first bind records a pid or a fingerprint on a row that has neither
-    and does not advance ``boot_generation``. A later bind with a different
-    pid, start time, or certificate fingerprint does. A fingerprint change
-    is a rebind even when pid and start time are still empty. Callers revoke
-    outstanding grants when the result kind is ``rebound``.
+    Any change to the stored pid, start time or certificate fingerprint
+    advances ``boot_generation``, including the first bind onto a row that
+    has none of them (Eggomi's keeper refuses an incarnation change at the
+    same generation). Repeating the stored values is ``unchanged``. The kind
+    is ``bound`` for a first bind and ``rebound`` otherwise; callers revoke
+    outstanding grants on ``rebound``.
     """
     starttime = process_starttime(pid) if pid is not None else None
 
@@ -202,7 +332,6 @@ def bind_process(
                 current_pid == pid
                 and current_start == starttime
                 and current_fp == next_fp
-                and current_pid is not None
             )
             if same:
                 return BindResult(
@@ -219,8 +348,7 @@ def bind_process(
                 and current_start is None
                 and not fingerprint_changed
             )
-            if not fresh:
-                row["boot_generation"] = _generation(row.get("boot_generation")) + 1
+            row["boot_generation"] = _generation(row.get("boot_generation")) + 1
             row["pid"] = pid
             row["starttime"] = starttime
             if fingerprint is not None:
@@ -237,9 +365,9 @@ def bind_process(
 def rebind_channel(path: Path, instance_id: str, channel_public: str) -> BindResult:
     """Install or rotate one instance's Unix channel public key.
 
-    The first write onto an empty ``channel_public`` does not advance
-    ``boot_generation``. Any later change does, including a return to a key
-    that was used before. The caller revokes outstanding grants on
+    Every change advances ``boot_generation``: the first write onto an
+    empty ``channel_public`` and any later change, including a return to a
+    key that was used before. The caller revokes outstanding grants on
     ``rebound`` and advances that guard's fence epoch.
     """
     _require_channel(channel_public)
@@ -254,11 +382,12 @@ def rebind_channel(path: Path, instance_id: str, channel_public: str) -> BindRes
                     "unchanged", instance_id, _generation(row.get("boot_generation"))
                 )
             fresh = not (isinstance(current, str) and bool(current))
-            if not fresh:
-                row["boot_generation"] = _generation(row.get("boot_generation")) + 1
+            row["boot_generation"] = _generation(row.get("boot_generation")) + 1
             row["channel_public"] = channel_public
             kind = "bound" if fresh else "rebound"
-            return BindResult(kind, instance_id, _generation(row.get("boot_generation")))
+            return BindResult(
+                kind, instance_id, _generation(row.get("boot_generation"))
+            )
         raise ValueError(f"instance {instance_id} is not admitted")
 
     return _mutate(path, mutate)
@@ -292,13 +421,26 @@ def set_boot(path: Path, instance_id: str, boot_id: str) -> int:
     return _mutate(path, mutate)
 
 
-def save_registry(path: Path, registry: AdmissionRegistry) -> None:
-    """Atomically replace the registry file.
+def save_registry(
+    path: Path,
+    registry: AdmissionRegistry,
+    signer: Optional[LauncherSigner] = None,
+) -> None:
+    """Sign every row and atomically replace the registry file.
 
-    A channel public key that changes from one non-empty value to another
-    advances ``boot_generation`` when the caller has not already done so.
+    Only the launcher calls this. ``signer`` defaults to the launcher key in
+    ``launcher_dir(path)``. A malformed row raises ``RowNotSignable`` and
+    nothing is written. A channel public key that changes from one non-empty
+    value to another advances ``boot_generation`` when the caller has not
+    already done so. A row whose channel key or fingerprint was ever signed
+    for another instance or role raises ``KeyAlreadyBound`` (``launcher.py``)
+    and nothing is written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if signer is None:
+        signer = LauncherSigner.at(launcher_dir(path))
+    if path.exists() and path.stat().st_size > 0:
+        load_for_launcher(path, signer)
     _advance_changed_channels(path, registry)
     for row in registry.workloads:
         if "boot_generation" not in row:
@@ -307,6 +449,13 @@ def save_registry(path: Path, registry: AdmissionRegistry) -> None:
             row["boot_history"] = [row["boot_id"]]
         if "starttime" not in row:
             row["starttime"] = None
+    signatures = [
+        signer.sign_row(registry.trust_domain, registry.tenant, row)
+        for row in registry.workloads
+    ]
+    KeyOwners(launcher_dir(path)).claim(registry.workloads)
+    for row, signature in zip(registry.workloads, signatures):
+        row["launcher_sig"] = signature
     payload = {
         "schema_version": "admission-registry/v1",
         "trust_domain": registry.trust_domain,
@@ -318,9 +467,10 @@ def save_registry(path: Path, registry: AdmissionRegistry) -> None:
 
 def _mutate(path: Path, fn: object) -> object:
     with _lock(path):
-        registry = load_registry(path)
+        signer = LauncherSigner.at(launcher_dir(path))
+        registry = load_for_launcher(path, signer)
         result = fn(registry)  # type: ignore[operator]
-        save_registry(path, registry)
+        save_registry(path, registry, signer=signer)
         return result
 
 
@@ -338,13 +488,65 @@ def _lock(path: Path) -> Iterator[None]:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    """Write the registry so readers never see a torn file.
+
+    The first write renames a new file into place. Later writes rewrite the
+    same inode under the write lock that readers share. Confined processes
+    see the registry through a read-only bind mount of that inode, and a
+    rename over the path would detach that mount in their namespace and
+    leave the new file writable to them.
+    """
+    data = text.encode("utf-8")
+    os.close(
+        os.open(path.with_name(path.name + ".wlock"), os.O_RDONLY | os.O_CREAT, 0o644)
+    )
+    if not path.exists():
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        fsync_dir(path.parent)
+        return
+    with _write_lock(path, fcntl.LOCK_EX):
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            view = memoryview(data)
+            offset = 0
+            while offset < len(data):
+                offset += os.pwrite(fd, view[offset:], offset)
+            os.ftruncate(fd, len(data))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+@contextmanager
+def _write_lock(path: Path, mode: int) -> Iterator[None]:
+    """Hold the registry write lock: exclusive to write, shared to read."""
+    lock_path = path.with_name(path.name + ".wlock")
+    if mode == fcntl.LOCK_EX:
+        fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o644)
+    else:
+        try:
+            fd = os.open(lock_path, os.O_RDONLY)
+        except FileNotFoundError:
+            yield
+            return
+    try:
+        fcntl.flock(fd, mode)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
+    """Advance the generation of a row whose stored identity changed.
+
+    Every launcher write path ends here, so a change to role, boot id,
+    channel key, fingerprint, pid or start time (including null to a value)
+    that the caller did not already count moves ``boot_generation`` past the
+    stored one.
+    """
     if not path.exists() or path.stat().st_size == 0:
         return
     previous = load_registry(path)
@@ -353,17 +555,38 @@ def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
         old = old_rows.get(row.get("instance_id"))
         if not isinstance(old, dict):
             continue
-        old_channel = old.get("channel_public")
-        new_channel = row.get("channel_public")
-        if (
-            isinstance(old_channel, str)
-            and old_channel
-            and isinstance(new_channel, str)
-            and new_channel
-            and old_channel != new_channel
-            and _generation(row.get("boot_generation")) <= _generation(old.get("boot_generation"))
-        ):
-            row["boot_generation"] = _generation(old.get("boot_generation")) + 1
+        old_generation = _generation(old.get("boot_generation"))
+        if _generation(row.get("boot_generation")) < old_generation:
+            raise RowNotSignable(
+                f"boot_generation of {row.get('instance_id')} would go back"
+            )
+        changed = any(old.get(name) != row.get(name) for name in _IDENTITY_FIELDS)
+        if changed and _generation(row.get("boot_generation")) <= old_generation:
+            row["boot_generation"] = old_generation + 1
+
+
+_IDENTITY_FIELDS = (
+    "role",
+    "boot_id",
+    "channel_public",
+    "cert_fingerprint",
+    "pid",
+    "starttime",
+)
+
+
+def _claims(row: Dict[str, object]) -> List[str]:
+    claims = [f"in:{row.get('instance_id')}"]
+    pid = row.get("pid")
+    if pid is not None:
+        claims.append(f"pr:{pid}/{row.get('starttime')}")
+    channel = row.get("channel_public")
+    if isinstance(channel, str) and channel:
+        claims.append(f"ch:{channel}")
+    fingerprint = row.get("cert_fingerprint")
+    if isinstance(fingerprint, str) and fingerprint:
+        claims.append(f"fp:{fingerprint}")
+    return claims
 
 
 def _require_channel(value: str) -> None:

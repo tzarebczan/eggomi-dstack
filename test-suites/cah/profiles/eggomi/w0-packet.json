@@ -27,7 +27,7 @@
   },
   "mount": {
     "keeper": "Unconfined. Owns state/authority, including the lab CA key, keeper policy, grant store, and journal.",
-    "other_processes": "User and mount namespace. Hides state/authority and state/roles, bind-mounts only that process's role directory, and remounts admission.json read-only.",
+    "other_processes": "User and mount namespace. Hides state/authority, state/launcher and state/roles, bind-mounts only that process's role directory, and remounts admission.json read-only.",
     "same_uid_ptrace": "Not additionally blocked. This is an E1 limit."
   },
   "egress": {
@@ -52,7 +52,7 @@
       "mode": "0600",
       "when": "CAH_TRANSPORT=mtls",
       "readers": "That instance's confined mount keeps only its own role directory. Other instance keys stay under the hidden authority directory.",
-      "notes": "Unix transport does not issue TLS instance keys. Every transport has an X25519 channel key at state/roles/<instance>/channel.key. Browser guards store it wrapped at channel.key.wrapped. The fence secret is state/fence/<instance>, outside the guard role directory."
+      "notes": "Unix transport does not issue TLS instance keys. Every transport has an X25519 channel key, the Noise KK static key on the Unix channel, at state/roles/<instance>/channel.key. Browser guards store it wrapped at channel.key.wrapped. The fence secret is state/fence/<instance>, outside the guard role directory."
     },
     {
       "id": "fill_secret",
@@ -80,7 +80,16 @@
       "mode": "0600",
       "when": "every fill run",
       "readers": "Launcher and keeper write it under the lock. Confined processes see a read-only bind.",
-      "notes": "The launcher writes a scoped row in-process. Keeper-core does not expose AdmitWorkload. A certificate-fingerprint change advances boot_generation and the caller revokes that instance's issued grants. The wire code is denied_boot."
+      "notes": "The launcher writes a scoped row in-process. Keeper-core does not expose AdmitWorkload. A certificate-fingerprint change advances boot_generation and the caller revokes that instance's issued grants. The wire code is denied_boot. Every row carries launcher_sig (Ed25519 over Eggomi's rowMessage bytes); a row without a valid one is no identity."
+    },
+    {
+      "id": "launcher_key",
+      "path": "state/launcher/row-signing.key",
+      "owners_path": "state/launcher/key-owners.jsonl",
+      "mode": "0600",
+      "when": "every fill run",
+      "readers": "Launcher. Confined processes hide state/launcher. Servers and clients get the 32-byte public key as --launcher-public.",
+      "notes": "Signs every admission row. The owner journal records each channel key's and fingerprint's first instance and role, fsynced before the registry names it, so a key never moves to another instance even after its row is gone. Outside authority/ and outside the registry."
     }
   ],
   "gates": [

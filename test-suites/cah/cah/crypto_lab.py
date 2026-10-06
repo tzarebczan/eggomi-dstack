@@ -1,8 +1,9 @@
 """Lab X25519, HKDF, and HMAC-based AEAD.
 
-The constructions here are the harness channel and the sealed answer.
-They are not a production cipher suite. The static key stays inside the
-compartment: that secrecy is the identity boundary.
+The constructions here are the sealed answer and the guard's lease-key wrap.
+They are not a production cipher suite. The compartment channel is Noise KK
+(``noise.py``, ``channel.py``). The static key stays inside the compartment:
+that secrecy is the identity boundary.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -92,7 +93,9 @@ def hkdf_sha256(ikm: bytes, info: bytes, length: int = 32) -> bytes:
     return out[:length]
 
 
-def aead_seal(key: bytes, nonce: bytes, aad: bytes, plaintext: bytes) -> Tuple[bytes, bytes]:
+def aead_seal(
+    key: bytes, nonce: bytes, aad: bytes, plaintext: bytes
+) -> Tuple[bytes, bytes]:
     """Encrypt ``plaintext`` and return ``(ciphertext, tag)``.
 
     The keystream is HMAC-SHA256 in counter mode. The tag is HMAC-SHA256
@@ -104,15 +107,21 @@ def aead_seal(key: bytes, nonce: bytes, aad: bytes, plaintext: bytes) -> Tuple[b
     if not nonce:
         raise ValueError("aead nonce is empty")
     ciphertext = _xor(plaintext, _keystream(key, nonce, len(plaintext)))
-    tag = hmac.new(key, _aead_tag_input(nonce, aad, ciphertext), hashlib.sha256).digest()
+    tag = hmac.new(
+        key, _aead_tag_input(nonce, aad, ciphertext), hashlib.sha256
+    ).digest()
     return ciphertext, tag
 
 
-def aead_open(key: bytes, nonce: bytes, aad: bytes, ciphertext: bytes, tag: bytes) -> bytes:
+def aead_open(
+    key: bytes, nonce: bytes, aad: bytes, ciphertext: bytes, tag: bytes
+) -> bytes:
     """Return the plaintext, or raise ``ValueError`` when the tag does not match."""
     if len(key) != 32 or len(tag) != 32:
         raise ValueError("aead open inputs are the wrong size")
-    expect = hmac.new(key, _aead_tag_input(nonce, aad, ciphertext), hashlib.sha256).digest()
+    expect = hmac.new(
+        key, _aead_tag_input(nonce, aad, ciphertext), hashlib.sha256
+    ).digest()
     if not hmac.compare_digest(expect, tag):
         raise ValueError("aead tag does not match")
     return _xor(ciphertext, _keystream(key, nonce, len(ciphertext)))
