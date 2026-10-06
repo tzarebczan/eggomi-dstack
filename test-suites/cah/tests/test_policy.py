@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
-from cah.policy import evaluate_prepare, load_policy
+from cah.policy import evaluate_prepare, load_current, load_policy, publish_revision
 
 POLICY = (
     Path(__file__).resolve().parents[1] / "profiles" / "eggomi" / "keeper-policy.json"
@@ -26,6 +28,10 @@ def _body() -> dict[str, object]:
         "lease_id": "lease-lab-1",
         "lease_epoch": 1,
         "recipient_instance_id": "browser-1",
+        "tenant": "tenant-lab-1",
+        "audience_role": "credential-broker",
+        "audience_instance": "broker-1",
+        "field": "password",
     }
 
 
@@ -53,6 +59,26 @@ class PolicyTests(unittest.TestCase):
         forged = _body()
         forged["recipient_instance_id"] = "browser-2"
         self.assertIsNone(evaluate_prepare(load_policy(POLICY), forged))
+
+    def test_publish_is_reloaded_and_immutable(self) -> None:
+        """The current pointer changes, and an existing revision id cannot."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            document = load_policy(POLICY)
+            publish_revision(directory, document)
+            self.assertEqual(load_current(directory)["policy_revision"], "pol-lab-1")
+            nxt = json.loads(json.dumps(document))
+            nxt["policy_revision"] = "pol-lab-2"
+            nxt["tenant"] = "tenant-lab-2"
+            publish_revision(directory, nxt)
+            loaded = load_current(directory)
+            self.assertEqual(loaded["tenant"], "tenant-lab-2")
+            prepared = evaluate_prepare(loaded, _body())
+            self.assertIsNone(prepared)
+            changed = json.loads(json.dumps(nxt))
+            changed["tenant"] = "tenant-other"
+            with self.assertRaises(ValueError):
+                publish_revision(directory, changed)
 
 
 if __name__ == "__main__":

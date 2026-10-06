@@ -22,8 +22,8 @@ SCHEMA = load_schema(
 class DemoTests(unittest.TestCase):
     """Positive fill plus copied, wrong-role, and wrong-boot refusals."""
 
-    def test_unix_peercred_fill(self) -> None:
-        """Unix peer credentials drive the Eggomi profile fill."""
+    def test_unix_pidfd_fill(self) -> None:
+        """Unix pidfd plus the keyed channel drive the Eggomi profile fill."""
         self._run("unix")
 
     def test_mtls_fill_through_byte_forwarder(self) -> None:

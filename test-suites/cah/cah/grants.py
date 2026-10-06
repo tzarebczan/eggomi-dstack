@@ -4,9 +4,11 @@ The wire value is a random reference. Keeper stores the binding: requester,
 recipient possession, policy, task, lease, and destination. A copied reference
 presented by another admitted browser is refused, and the grant stays unused.
 
-Consumption and boot revocation are appended to a journal outside the grant
+Consumption and boot denial are appended to a journal outside the grant
 snapshot. Reloading an older ``grants.json`` does not revive a journaled
-grant. Use ttl is capped at 60 seconds.
+grant. The wire code for a boot mismatch is ``denied_boot``. Use ttl is
+capped at 60 seconds. The sealed credential's own expiry is a separate
+30 second guard check.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -28,7 +30,7 @@ from .registry import WorkloadIdentity
 
 SCHEMA = "workload-use-grant/v1"
 MAX_TTL_SECONDS = 60.0
-TERMINAL = frozenset({"consumed", "revoked_boot"})
+TERMINAL = frozenset({"consumed", "denied_boot"})
 
 
 class GrantStore:
@@ -64,11 +66,20 @@ class GrantStore:
         ttl_seconds: float,
         frame_id: str,
         navigation_generation: str,
+        *,
+        audience_role: str = "",
+        audience_instance: str = "",
+        audience_key: str = "",
+        field: str = "",
+        tenant: str = "",
+        fence: str = "",
     ) -> Dict[str, Any]:
         """Create a single-use grant and return the stored record.
 
-        The recipient must already have a certificate fingerprint or a pid
-        and start time. The caller sends only ``grant_ref`` to the requester.
+        The recipient must already have a certificate fingerprint, a channel
+        key, or a pid and start time. The caller sends only ``grant_ref`` to
+        the requester. Audience, field, tenant, and fence are bindings, not
+        requester choices.
         """
         if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
             raise ValueError("use grant ttl must be in (0, 60] seconds")
@@ -94,6 +105,14 @@ class GrantStore:
                 "frame_binding": frame_id,
             },
             "task": {"task_id": task_id, "operation_id": operation_id},
+            "audience": {
+                "role": audience_role,
+                "instance_id": audience_instance,
+                "channel_public": audience_key,
+            },
+            "field": field,
+            "tenant": tenant,
+            "fence": fence,
             "lease": {
                 "lease_id": lease_id,
                 "epoch": lease_epoch,
@@ -115,23 +134,29 @@ class GrantStore:
     def resolve(
         self,
         grant_ref: str,
-        observed: WorkloadIdentity,
+        presenter: WorkloadIdentity,
         origin: str,
         operation_id: str,
         frame_id: str,
         navigation_generation: str,
+        *,
+        broker_instance: Optional[str] = None,
+        field: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Recheck recipient possession and consume the grant on success.
+        """Recheck the authenticated presenter and consume the grant on success.
 
-        Role, instance, boot, origin, frame, and operation mismatches do not
-        consume the grant. A boot-generation mismatch is terminal.
+        ``presenter`` is the guard identified by a possession proof. Broker
+        observations are not an argument. Role, instance, origin, frame, and
+        operation mismatches do not consume the grant. A boot-generation
+        mismatch is terminal ``denied_boot``.
         """
         with self._locked():
             self._sync_locked()
             tombstone = self._journal.get(grant_ref)
             if tombstone == "consumed":
                 return {"ok": False, "code": "grant_consumed"}
-            if tombstone == "revoked_boot":
+            if tombstone == "denied_boot":
                 return {"ok": False, "code": "denied_boot"}
             grant = self._grants.get(grant_ref)
             if grant is None:
@@ -156,19 +181,30 @@ class GrantStore:
             ):
                 return {"ok": False, "code": "denied_payload"}
             recipient = grant["recipient"]
-            if observed.role != recipient["role"]:
+            if presenter.role != recipient["role"]:
                 return {"ok": False, "code": "denied_role"}
-            if observed.instance_id != recipient["instance_id"]:
+            if presenter.instance_id != recipient["instance_id"]:
                 return {"ok": False, "code": "denied_recipient"}
-            if observed.boot_id != recipient[
+            if presenter.boot_id != recipient[
                 "boot_id"
-            ] or observed.boot_generation != int(recipient["boot_generation"]):
-                self._terminal_locked(grant_ref, "revoked_boot")
+            ] or presenter.boot_generation != int(recipient["boot_generation"]):
+                self._terminal_locked(grant_ref, "denied_boot")
                 return {"ok": False, "code": "denied_boot"}
-            if not _possession_matches(recipient, observed):
+            if not _possession_matches(recipient, presenter):
                 return {"ok": False, "code": "denied_recipient"}
             if origin != grant["policy"]["origin"]:
                 return {"ok": False, "code": "denied_origin"}
+            audience = grant.get("audience") if isinstance(grant.get("audience"), dict) else {}
+            if broker_instance is not None and audience.get("instance_id") not in (
+                "",
+                None,
+                broker_instance,
+            ):
+                return {"ok": False, "code": "denied_role"}
+            if field is not None and grant.get("field") not in ("", None, field):
+                return {"ok": False, "code": "denied_payload"}
+            if tenant is not None and grant.get("tenant") not in ("", None, tenant):
+                return {"ok": False, "code": "denied_payload"}
             self._terminal_locked(grant_ref, "consumed")
             return {
                 "ok": True,
@@ -219,6 +255,8 @@ class GrantStore:
     def _load(self) -> None:
         with self._locked():
             self._ensure_epoch_locked()
+            if self.epoch_path.exists():
+                self._epoch = _read_epoch(self.epoch_path)
             self._read_journal_locked()
             self._grants = {}
             if not self.path.exists():
@@ -319,7 +357,7 @@ def revoke_instance_grants(
     epoch_path: Path,
     instance_id: str,
 ) -> int:
-    """Journal ``revoked_boot`` for every issued grant of ``instance_id``.
+    """Journal ``denied_boot`` for every issued grant of ``instance_id``.
 
     The keeper process observes the journal on its next resolve. A restored
     grants file from before this call does not clear the journal.
@@ -344,10 +382,10 @@ def revoke_instance_grants(
                 continue
             if grant.get("disposition") != "issued":
                 continue
-            grant["disposition"] = "revoked_boot"
+            grant["disposition"] = "denied_boot"
             _append_journal(
                 journal_path,
-                {"kind": "grant", "grant_ref": ref, "disposition": "revoked_boot"},
+                {"kind": "grant", "grant_ref": ref, "disposition": "denied_boot"},
             )
             count += 1
         epoch += 1
@@ -375,11 +413,15 @@ def _possession_matches(recipient: Dict[str, Any], observed: WorkloadIdentity) -
         and isinstance(starttime, int)
         and not isinstance(starttime, bool)
     )
-    if not has_fp and not has_pid:
+    channel = recipient.get("channel_public")
+    has_channel = isinstance(channel, str) and bool(channel)
+    if not has_fp and not has_pid and not has_channel:
         return False
     if has_fp and observed.cert_fingerprint != fingerprint:
         return False
     if has_pid and (observed.pid != pid or observed.starttime != starttime):
+        return False
+    if has_channel and observed.channel_public != channel:
         return False
     return True
 
@@ -417,6 +459,7 @@ def _party(identity: WorkloadIdentity) -> Dict[str, Any]:
         "cert_fingerprint": identity.cert_fingerprint,
         "pid": identity.pid,
         "starttime": identity.starttime,
+        "channel_public": identity.channel_public,
     }
 
 

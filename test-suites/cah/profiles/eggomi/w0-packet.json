@@ -52,15 +52,15 @@
       "mode": "0600",
       "when": "CAH_TRANSPORT=mtls",
       "readers": "That instance's confined mount keeps only its own role directory. Other instance keys stay under the hidden authority directory.",
-      "notes": "Unix transport does not issue instance keys. Possession on unix is pid plus /proc/<pid>/stat start time."
+      "notes": "Unix transport does not issue TLS instance keys. Every transport has an X25519 channel key at state/roles/<instance>/channel.key. Browser guards store it wrapped at channel.key.wrapped. The fence secret is state/fence/<instance>, outside the guard role directory."
     },
     {
       "id": "fill_secret",
-      "path": null,
-      "mode": null,
+      "path": "state/authority/fill-secret",
+      "mode": "0600",
       "when": "every fill run",
-      "readers": "Credential-broker process memory, from stdin. Released only by a successful CompleteFill.",
-      "notes": "Lab canary cah-synthetic-fill-v1. It is not a key file. The only result files that may contain it are results/positive_fill.json and results/copied_owner_fill.json."
+      "readers": "Keeper only. Confined processes hide state/authority. The broker does not receive the plaintext.",
+      "notes": "Lab canary cah-synthetic-fill-v1. Keeper seals it to the guard lease key. The canary scan ignores this file. The only result files that may contain the opened value are results/positive_fill.json and results/copied_owner_fill.json."
     },
     {
       "id": "grant_store",
@@ -79,7 +79,7 @@
       "mode": "0600",
       "when": "every fill run",
       "readers": "Launcher and keeper write it under the lock. Confined processes see a read-only bind.",
-      "notes": "AdmitWorkload may append one scoped row. A certificate-fingerprint change advances boot_generation and the caller revokes that instance's issued grants."
+      "notes": "The launcher writes a scoped row in-process. Keeper-core does not expose AdmitWorkload. A certificate-fingerprint change advances boot_generation and the caller revokes that instance's issued grants. The wire code is denied_boot."
     }
   ],
   "gates": [

@@ -7,5 +7,10 @@
   "lease_epoch": 1,
   "frame_id": "frame-1",
   "navigation_generation": "nav-1",
-  "recipient_instance_id": "browser-1"
+  "recipient_instance_id": "browser-1",
+  "tenant": "tenant-lab-1",
+  "audience_role": "credential-broker",
+  "audience_instance": "broker-1",
+  "field": "password",
+  "requester_instance": "omi-1"
 }

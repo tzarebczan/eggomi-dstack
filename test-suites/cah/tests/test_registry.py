@@ -132,7 +132,7 @@ class RegistryTests(unittest.TestCase):
                     grants_path, journal_path, epoch_path, "browser-1"
                 )
             self.assertEqual(
-                store.get(str(record["grant_ref"]))["disposition"], "revoked_boot"
+                store.get(str(record["grant_ref"]))["disposition"], "denied_boot"
             )
             third = bind_process(path, "browser-1", None, "aa")
             self.assertEqual(third.kind, "rebound")
@@ -157,7 +157,7 @@ class RegistryTests(unittest.TestCase):
             restored = reloaded.get(str(record["grant_ref"]))
             self.assertIsNotNone(restored)
             assert restored is not None
-            self.assertEqual(restored["disposition"], "revoked_boot")
+            self.assertEqual(restored["disposition"], "denied_boot")
 
     def test_fingerprint_change_with_pid_is_rebind(self) -> None:
         """A certificate change on a live pid is a rebind, not a fresh bind."""

@@ -177,7 +177,7 @@ class GrantTests(unittest.TestCase):
             )
             self.assertEqual(refused["code"], "denied_boot")
             self.assertEqual(
-                store.get(str(record["grant_ref"]))["disposition"], "revoked_boot"
+                store.get(str(record["grant_ref"]))["disposition"], "denied_boot"
             )
             again = store.resolve(
                 str(record["grant_ref"]),
@@ -303,6 +303,84 @@ class GrantTests(unittest.TestCase):
                     "frame-1",
                     "nav-1",
                 )
+
+
+    def test_audience_field_and_tenant_do_not_consume(self) -> None:
+        """A broker, field, or tenant mismatch leaves the grant issued."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GrantStore(Path(tmp) / "grants.json")
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            record = store.issue(
+                _id("omi-runner", "omi-1", "boot-omi-1"),
+                recipient,
+                "pol",
+                "cred",
+                "https://lab.invalid/signin",
+                "task",
+                "op-1",
+                "lease",
+                1,
+                60,
+                "frame-1",
+                "nav-1",
+                audience_role="credential-broker",
+                audience_instance="broker-1",
+                audience_key="aa" * 32,
+                field="password",
+                tenant="tenant-lab-1",
+                fence="fence-browser-1",
+            )
+            wrong_broker = store.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                broker_instance="broker-2",
+                field="password",
+                tenant="tenant-lab-1",
+            )
+            self.assertEqual(wrong_broker["code"], "denied_role")
+            wrong_field = store.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                broker_instance="broker-1",
+                field="otp",
+                tenant="tenant-lab-1",
+            )
+            self.assertEqual(wrong_field["code"], "denied_payload")
+            wrong_tenant = store.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                broker_instance="broker-1",
+                field="password",
+                tenant="tenant-other",
+            )
+            self.assertEqual(wrong_tenant["code"], "denied_payload")
+            self.assertEqual(store.get(str(record["grant_ref"]))["uses"], 0)
+            self.assertEqual(store.get(str(record["grant_ref"]))["disposition"], "issued")
+
+    def test_reopen_keeps_grants_across_a_later_epoch(self) -> None:
+        """A new store reads the epoch file before it decides the grants are stale."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "grants.json"
+            store = GrantStore(path)
+            record = _issue(store, _id("browser-guard", "browser-1", "boot-1"))
+            store.note_bootstrap("ab" * 32)
+            reopened = GrantStore(path)
+            self.assertIsNotNone(reopened.get(str(record["grant_ref"])))
+            reopened.note_bootstrap("cd" * 32)
+            again = GrantStore(path)
+            self.assertEqual(again.get(str(record["grant_ref"]))["disposition"], "issued")
 
 
 if __name__ == "__main__":

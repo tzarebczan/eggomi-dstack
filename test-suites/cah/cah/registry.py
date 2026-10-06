@@ -1,8 +1,10 @@
 """Admission registry for one lab run.
 
 The launcher creates rows. keeper-core may append a scoped bootstrap row.
-Peer identity is the row recorded for a pid plus start time, or for a
-certificate fingerprint. A self-declared role in an RPC body is not consulted.
+Peer identity for channel setup is the row recorded for a pid plus start
+time. The registered channel key, or a certificate fingerprint, is the
+possession proof on the keyed channel. A self-declared role in an RPC body
+is not consulted.
 
 Boot generations only advance. Rebinding a pid, a start time, or a
 certificate fingerprint mints a new generation. A fingerprint change is a
@@ -41,10 +43,13 @@ class WorkloadIdentity:
     cert_fingerprint: Optional[str]
     pid: Optional[int]
     starttime: Optional[int]
+    channel_public: Optional[str] = None
 
     def has_possession(self) -> bool:
         """Return whether this row has a key or a live process binding."""
         if isinstance(self.cert_fingerprint, str) and self.cert_fingerprint:
+            return True
+        if isinstance(self.channel_public, str) and self.channel_public:
             return True
         return self.pid is not None and self.starttime is not None
 
@@ -87,6 +92,15 @@ class AdmissionRegistry:
             return self._identity(row)
         return None
 
+    def find_channel(self, public_hex: str) -> Optional[WorkloadIdentity]:
+        """Return the workload bound to this registered channel key."""
+        if not public_hex:
+            return None
+        for row in self.workloads:
+            if row.get("channel_public") == public_hex:
+                return self._identity(row)
+        return None
+
     def find_fingerprint(self, fingerprint: str) -> Optional[WorkloadIdentity]:
         """Return the workload bound to a certificate fingerprint."""
         if not fingerprint:
@@ -107,6 +121,7 @@ class AdmissionRegistry:
         pid = row.get("pid")
         fingerprint = row.get("cert_fingerprint")
         starttime = row.get("starttime")
+        channel = row.get("channel_public")
         return WorkloadIdentity(
             trust_domain=self.trust_domain,
             tenant=self.tenant,
@@ -123,6 +138,7 @@ class AdmissionRegistry:
                 if isinstance(starttime, int) and not isinstance(starttime, bool)
                 else None
             ),
+            channel_public=str(channel) if isinstance(channel, str) and channel else None,
         )
 
 

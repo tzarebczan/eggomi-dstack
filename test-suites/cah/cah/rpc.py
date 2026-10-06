@@ -14,8 +14,16 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .auth import AuthContext, authenticate_mtls, authenticate_unix, peer_spiffe
+from .channel import (
+    ChannelError,
+    GateDenial,
+    client_handshake,
+    server_handshake,
+    write_gate_denial,
+)
 from .forward import connect, parse_address
 from .frame import FrameError, read_frame, write_frame
+from .registry import load_registry
 
 Handler = Callable[[AuthContext, str, Dict[str, Any]], Dict[str, Any]]
 
@@ -41,6 +49,9 @@ def call_rpc(
     ca: Optional[Path] = None,
     expect_server_role: Optional[str] = None,
     expect_server: Optional[Dict[str, str]] = None,
+    channel_private: Optional[bytes] = None,
+    registry_path: Optional[Path] = None,
+    peer_role: Optional[str] = None,
     timeout: float = 5,
 ) -> Dict[str, Any]:
     """Send one request and return the response object.
@@ -62,8 +73,24 @@ def call_rpc(
             assert cert is not None and key is not None and ca is not None
             assert expect_server is not None
             sock = _wrap_client(sock, cert, key, ca, expect_server)
-        write_frame(sock, {"method": method, "body": body})
-        response = read_frame(sock)
+            write_frame(sock, {"method": method, "body": body})
+            response = read_frame(sock)
+        else:
+            if channel_private is None or registry_path is None:
+                raise RuntimeError("unix client is missing the channel key")
+            role = peer_role or expect_server_role
+            if not role:
+                raise RuntimeError("unix client is missing the peer role")
+            try:
+                session = client_handshake(
+                    sock, channel_private, _peer_public(registry_path, role)
+                )
+            except GateDenial as exc:
+                return rpc_error(exc.code)
+            session.write({"method": method, "body": body})
+            response = session.read()
+    except ChannelError as exc:
+        raise RuntimeError("keyed channel failed") from exc
     finally:
         sock.close()
     if not isinstance(response.get("code"), str) or not isinstance(
@@ -84,6 +111,7 @@ def serve(
     cert: Optional[Path] = None,
     key: Optional[Path] = None,
     ca: Optional[Path] = None,
+    channel_private: Optional[bytes] = None,
 ) -> None:
     """Accept connections until ``stop_file`` appears.
 
@@ -105,7 +133,16 @@ def serve(
             break
         threading.Thread(
             target=_handle,
-            args=(conn, transport, registry_path, handler, cert, key, ca),
+            args=(
+                conn,
+                transport,
+                registry_path,
+                handler,
+                cert,
+                key,
+                ca,
+                channel_private,
+            ),
             daemon=True,
         ).start()
     listen_sock.close()
@@ -119,28 +156,108 @@ def _handle(
     cert: Optional[Path],
     key: Optional[Path],
     ca: Optional[Path],
+    channel_private: Optional[bytes],
 ) -> None:
     try:
         conn.settimeout(5)
         if transport == "mtls":
             if cert is None or key is None or ca is None:
                 raise RuntimeError("mtls server is missing certificate material")
-            conn = _wrap_server(conn, cert, key, ca)
-            auth = authenticate_mtls(conn, registry_path)
+            tls = _wrap_server(conn, cert, key, ca)
+            auth = _mtls_with_pidfd(conn, tls, registry_path)
+            _exchange_plain(tls, auth, handler)
         else:
-            auth = authenticate_unix(conn, registry_path)
-        request = read_frame(conn)
-        method = request.get("method")
-        body = request.get("body")
-        if not isinstance(method, str) or not isinstance(body, dict):
-            response = rpc_error("denied_payload")
-        else:
-            response = handler(auth, method, body)
-        write_frame(conn, response)
-    except (FrameError, OSError, ssl.SSLError, RuntimeError):
+            _exchange_unix(conn, registry_path, handler, channel_private)
+    except (FrameError, ChannelError, OSError, ssl.SSLError, RuntimeError):
         print("[cah] request failed", flush=True)
     finally:
         conn.close()
+
+
+def _mtls_with_pidfd(
+    raw: socket.socket, tls: ssl.SSLSocket, registry_path: Path
+) -> AuthContext:
+    """Require the certificate key, and a live pidfd when the socket is Unix.
+
+    ``SO_PEERPIDFD`` is a Unix-socket option. Lab mTLS over TCP uses the
+    certificate as the keyed channel. A Unix socket wrapped in TLS still
+    has to name the same instance as that certificate.
+    """
+    auth = authenticate_mtls(tls, registry_path)
+    if raw.family != socket.AF_UNIX:
+        return auth
+    gate = authenticate_unix(raw, registry_path)
+    if (
+        not gate.admitted
+        or not auth.admitted
+        or gate.identity is None
+        or auth.identity is None
+        or gate.identity.instance_id != auth.identity.instance_id
+    ):
+        return AuthContext("mtls", False, "denied_unadmitted", None)
+    return auth
+
+
+def _exchange_plain(
+    conn: socket.socket, auth: AuthContext, handler: Handler
+) -> None:
+    request = read_frame(conn)
+    method = request.get("method")
+    body = request.get("body")
+    if not isinstance(method, str) or not isinstance(body, dict):
+        response = rpc_error("denied_payload")
+    else:
+        response = handler(auth, method, body)
+    write_frame(conn, response)
+
+
+def _exchange_unix(
+    conn: socket.socket,
+    registry_path: Path,
+    handler: Handler,
+    channel_private: Optional[bytes],
+) -> None:
+    """Gate on the pidfd, then speak only over the keyed channel."""
+    auth = authenticate_unix(conn, registry_path)
+    if (
+        channel_private is None
+        or not auth.admitted
+        or auth.identity is None
+        or not auth.identity.channel_public
+    ):
+        write_gate_denial(conn, auth.denial_code or "denied_unadmitted")
+        _drain(conn)
+        return
+    session = server_handshake(
+        conn, channel_private, bytes.fromhex(auth.identity.channel_public)
+    )
+    request = session.read()
+    method = request.get("method")
+    body = request.get("body")
+    if not isinstance(method, str) or not isinstance(body, dict):
+        response = rpc_error("denied_payload")
+    else:
+        response = handler(auth, method, body)
+    session.write(response)
+
+
+def _drain(sock: socket.socket) -> None:
+    """Read leftover client bytes so a gate denial is not a reset."""
+    try:
+        sock.settimeout(1)
+        while sock.recv(4096):
+            continue
+    except (TimeoutError, OSError):
+        return
+
+
+def _peer_public(registry_path: Path, role: str) -> bytes:
+    registry = load_registry(registry_path)
+    for row in registry.workloads:
+        public = row.get("channel_public")
+        if row.get("role") == role and isinstance(public, str) and public:
+            return bytes.fromhex(public)
+    raise RuntimeError(f"no channel key for {role}")
 
 
 def _bind(address: str) -> tuple[socket.socket, str]:

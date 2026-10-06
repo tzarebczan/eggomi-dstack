@@ -36,12 +36,12 @@ class AccessTests(unittest.TestCase):
             graph.permitted("omi-runner", "credential-broker", "CompleteFill")
         )
         self.assertFalse(graph.permitted("browser-guard", "keeper-core", "PrepareUse"))
+        self.assertTrue(
+            graph.permitted("browser-guard", "keeper-core", "QueryOutcome")
+        )
         self.assertFalse(graph.permitted("omi-runner", "keeper-core", "AdmitWorkload"))
         self.assertFalse(graph.permitted("connector", "keeper-core", "Health"))
-        self.assertIsNotNone(graph.bootstrap)
-        assert graph.bootstrap is not None
-        self.assertTrue(graph.bootstrap.one_use)
-        self.assertEqual(graph.bootstrap.caller_role, "platform-launcher")
+        self.assertIsNone(graph.bootstrap)
 
     def test_graph_matches_the_demo_instances(self) -> None:
         """The profile graph names the same instances the demo admits."""

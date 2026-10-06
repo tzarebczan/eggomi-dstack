@@ -24,9 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .admission import admit_scoped
 from .confine import popen_confined
+from .crypto_lab import generate_private, public_key, wrap_private
 from .grants import revoke_instance_grants
 from .metrics import load_schema, measurement, sum_present, validate_record
+from .policy import load_policy, publish_revision
 from .registry import (
     AdmissionRegistry,
     BindResult,
@@ -95,10 +98,13 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
         shutil.copyfile(material.ca_cert, public / "ca.crt")
         for _role, instance in instances:
             _export_material(state, material, instance)
-    policy_path = authority / "keeper-policy.json"
-    shutil.copyfile(PROFILE / "keeper-policy.json", policy_path)
-    os.chmod(policy_path, 0o600)
-    _write_registry(state, material)
+    policy_dir = authority / "policy"
+    publish_revision(policy_dir, load_policy(PROFILE / "keeper-policy.json"))
+    secret_path = authority / "fill-secret"
+    secret_path.write_text(CANARY + "\n", encoding="utf-8")
+    os.chmod(secret_path, 0o600)
+    publics = _install_channel_keys(state, instances)
+    _write_registry(state, material, publics)
     access = PROFILE / "service-access.json"
     pins = _server_pins(material)
     env = os.environ.copy()
@@ -122,7 +128,7 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
             "",
             grant_ttl,
             pins,
-            policy_path,
+            policy_dir,
             confine=False,
         )
         broker_addr = _start_server(
@@ -138,7 +144,7 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
             keeper_addr,
             grant_ttl,
             pins,
-            policy_path,
+            policy_dir,
             confine=True,
         )
         broker_pid = procs[-1].pid
@@ -155,7 +161,7 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
             "",
             grant_ttl,
             pins,
-            policy_path,
+            policy_dir,
             confine=True,
         )
         broker_public = broker_addr
@@ -231,7 +237,7 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
             "evidence_level": "E1",
             "deployment_class": "L",
             "fidelity": "host-native",
-            "transport": "unix-peercred" if transport == "unix" else "mtls",
+            "transport": "unix-pidfd" if transport == "unix" else "mtls",
             "profile": "eggomi",
             "scenario_port": "fill-v1",
             "retired_scenario_alias": "J06",
@@ -243,7 +249,7 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
             "nested_smolvm": "deferred",
             "vsock": vsock_label
             if transport == "mtls"
-            else "byte-forward placeholder; unix peercred used for RPC",
+            else "byte-forward placeholder; unix pidfd and the keyed channel used for RPC",
             "cn_ignored": _cn_ignored(material) if material else None,
             "outer_cvm": _outer_cvm(),
             "cases": cases,
@@ -502,37 +508,29 @@ def _run_cases(
         stranger=True,
     )
     token = _write_bootstrap(state)
-    oneshot(
-        "bootstrap_wrong_role",
-        "bootstrap-steal",
-        "omi-runner",
-        "omi-1",
-        "denied_role",
-        token=token,
+    _local_bootstrap(
+        state, cases, "bootstrap_wrong_role", "omi-runner", token, "connector", "denied_role"
     )
-    oneshot(
+    _local_bootstrap(
+        state,
+        cases,
         "bootstrap_wrong_scope",
-        "bootstrap-scope",
         "platform-launcher",
-        "launcher-1",
+        token,
+        "omi-runner",
         "denied_bootstrap",
-        token=token,
     )
-    oneshot(
-        "bootstrap_ok",
-        "bootstrap",
-        "platform-launcher",
-        "launcher-1",
-        "ok",
-        token=token,
+    _local_bootstrap(
+        state, cases, "bootstrap_ok", "platform-launcher", token, "connector", "ok"
     )
-    oneshot(
+    _local_bootstrap(
+        state,
+        cases,
         "bootstrap_replay",
-        "bootstrap",
         "platform-launcher",
-        "launcher-1",
+        token,
+        "connector",
         "denied_bootstrap",
-        token=token,
     )
     return cases
 
@@ -747,6 +745,8 @@ def _start_server(
         str(state / "admission.json"),
         "--authority",
         str(state / "authority"),
+        "--channel-key",
+        str(state / "roles" / instance / "channel.key"),
     ]
     if keeper:
         cmd.extend(["--keeper", keeper])
@@ -777,21 +777,17 @@ def _start_server(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("w", encoding="utf-8")
     logs.append(log)
-    stdin: Any = subprocess.PIPE if role == "credential-broker" else subprocess.DEVNULL
     proc = _spawn(
         cmd,
         state,
         instance,
         env,
-        stdin,
+        subprocess.DEVNULL,
         log,
         log,
         confine=confine,
     )
     procs.append(proc)
-    if role == "credential-broker" and proc.stdin is not None:
-        proc.stdin.write((CANARY + "\n").encode("utf-8"))
-        proc.stdin.close()
     _bind(state, instance, proc.pid)
     return _wait_ready(state, role, proc, log_path)
 
@@ -857,6 +853,8 @@ def _client_cmd(
         connector,
         "--fixture",
         str(fixture_path),
+        "--instance",
+        instance,
     ]
     if grant_ref is not None:
         grant_path = state / "fixtures" / f"{case}.grant"
@@ -914,6 +912,68 @@ def _fixture(operation_id: str, origin: Optional[str]) -> Dict[str, Any]:
     if origin is not None:
         fixture["origin"] = origin
     return fixture
+
+
+def _install_channel_keys(
+    state: Path, instances: List[tuple[str, str]]
+) -> Dict[str, str]:
+    """Write one X25519 key per instance. Browser keys are fence-wrapped."""
+    publics: Dict[str, str] = {}
+    for _role, instance in instances:
+        private = generate_private()
+        publics[instance] = public_key(private).hex()
+        role_dir = state / "roles" / instance
+        role_dir.mkdir(parents=True, exist_ok=True)
+        if instance in {"browser-1", "browser-2"}:
+            _wrap_guard_key(state, instance, private)
+        else:
+            path = role_dir / "channel.key"
+            path.write_bytes(private)
+            os.chmod(path, 0o600)
+    return publics
+
+
+def _wrap_guard_key(state: Path, instance: str, private: bytes) -> None:
+    fence = state / "fence" / instance
+    fence.mkdir(parents=True, mode=0o700)
+    secret = generate_private()
+    (fence / "secret").write_bytes(secret)
+    os.chmod(fence / "secret", 0o600)
+    (fence / "epoch").write_text("1\n", encoding="utf-8")
+    os.chmod(fence / "epoch", 0o600)
+    wrapped = state / "roles" / instance / "channel.key.wrapped"
+    wrapped.write_bytes(wrap_private(secret, 1, private))
+    os.chmod(wrapped, 0o600)
+    fence_name = "fence-browser-1" if instance == "browser-1" else f"fence-{instance}"
+    lease = {"epoch": 1, "fence": fence_name, "field": "password", "tenant": TENANT}
+    lease_path = state / "roles" / instance / "lease.json"
+    lease_path.write_text(
+        json.dumps(lease, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.chmod(lease_path, 0o600)
+
+
+def _local_bootstrap(
+    state: Path,
+    cases: List[Dict[str, str]],
+    name: str,
+    caller_role: str,
+    token: str,
+    admit_role: str,
+    expect: str,
+) -> None:
+    """Run launcher admission in this process. Confined clients cannot write it."""
+    fields = _bootstrap_fields()
+    response = admit_scoped(
+        state / "admission.json",
+        state / "authority",
+        caller_role=caller_role,
+        token=token,
+        admit_role=admit_role,
+        admit_instance=fields["admit_instance_id"],
+        admit_boot=fields["admit_boot_id"],
+    )
+    cases.append({"name": name, "expect": expect, "actual": str(response["code"])})
 
 
 def _bootstrap_fields() -> Dict[str, str]:
@@ -1003,7 +1063,9 @@ def _wait_ready(
     )
 
 
-def _write_registry(state: Path, material: Optional[LabMaterial]) -> None:
+def _write_registry(
+    state: Path, material: Optional[LabMaterial], publics: Dict[str, str]
+) -> None:
     workloads = []
     for role, instance, boot in SERVERS + CLIENTS:
         fingerprint = None
@@ -1019,6 +1081,7 @@ def _write_registry(state: Path, material: Optional[LabMaterial]) -> None:
                 "cert_fingerprint": fingerprint,
                 "pid": None,
                 "starttime": None,
+                "channel_public": publics[instance],
             }
         )
         (state / "roles" / instance).mkdir(parents=True, exist_ok=True)
@@ -1055,7 +1118,7 @@ def _grant_dispositions(state: Path) -> bool:
         return False
     if by_op["op-copied"]["disposition"] != "consumed":
         return False
-    if by_op["op-boot"]["disposition"] != "revoked_boot":
+    if by_op["op-boot"]["disposition"] != "denied_boot":
         return False
     if any(
         row["policy"]["origin"] == "https://attacker.example"
@@ -1078,6 +1141,8 @@ def _canary_hits(state: Path) -> List[str]:
         if not path.is_file():
             continue
         if path.name in FILL_RESULTS:
+            continue
+        if path.resolve() == (state / "authority" / "fill-secret").resolve():
             continue
         if needle in path.read_bytes():
             hits.append(str(path.relative_to(state)))
@@ -1252,8 +1317,8 @@ def _tls_record(
         basis = "lab mtls is enabled but the handshake is not timed separately"
         reason = "a tls handshake timer is not measured on this lab path"
     else:
-        basis = "unix peercred path does not handshake tls"
-        reason = "unix peercred path does not perform a tls handshake"
+        basis = "unix pidfd path does not handshake tls"
+        reason = "unix pidfd path does not perform a tls handshake"
     return measurement(
         schema,
         run_id=run_id,

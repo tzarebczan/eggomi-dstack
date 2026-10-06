@@ -48,16 +48,16 @@
       "ws1_caller": null,
       "ws1_callee": null,
       "ws1_method": null,
-      "deviation": "WS1 returns the outcome on keeper-authority to browser-guard ExecuteBrowserOperation. ReportOutcome is a stub edge, and it is accepted only for the consumed grant's recipient."
+      "deviation": "WS1 returns the outcome on keeper-authority to browser-guard ExecuteBrowserOperation. ReportOutcome is a stub edge, and it is accepted only for the consumed grant's recipient. unknown is a recorded outcome."
     },
     {
-      "caller_role": "platform-launcher",
+      "caller_role": "browser-guard",
       "callee": "keeper-core",
-      "method": "AdmitWorkload",
+      "method": "QueryOutcome",
       "ws1_caller": null,
       "ws1_callee": null,
       "ws1_method": null,
-      "deviation": "WS1 admission is launcher to identity-service IssueForVerifiedLaunch. Keeper-core appending a scoped row is a stub deviation. The launcher still writes the scope file."
+      "deviation": "QueryOutcome lets the recipient read a recorded fill outcome, including unknown after a lost answer. WS1 has no separate query method."
     }
   ]
 }

@@ -34,6 +34,14 @@
     "task_id": "task-lab-1",
     "operation_id": "op-positive"
   },
+  "audience": {
+    "role": "credential-broker",
+    "instance_id": "broker-1",
+    "channel_public": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+  },
+  "field": "password",
+  "tenant": "tenant-lab-1",
+  "fence": "fence-browser-1",
   "lease": {
     "lease_id": "lease-lab-1",
     "epoch": 1,

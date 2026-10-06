@@ -1,17 +1,24 @@
 {
   "schema_version": "cah-keeper-policy/v1",
   "policy_revision": "pol-lab-1",
+  "tenant": "tenant-lab-1",
+  "audience": {
+    "role": "credential-broker",
+    "instance_id": "broker-1"
+  },
   "credentials": {
     "cred-lab-1": {
       "origins": ["https://lab.invalid/signin"],
-      "method": "CompleteFill"
+      "method": "CompleteFill",
+      "field": "password"
     }
   },
   "leases": {
     "browser-1": {
       "lease_id": "lease-lab-1",
       "epoch": 1,
-      "role": "browser-guard"
+      "role": "browser-guard",
+      "fence": "fence-browser-1"
     }
   },
   "operations": {

@@ -16,7 +16,6 @@ from .access import load_access
 from .auth import AuthContext
 from .grants import GrantStore
 from .handlers import ServerState, dispatch
-from .policy import load_policy
 from .rpc import serve
 
 
@@ -36,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", type=Path)
     parser.add_argument("--authority", type=Path)
     parser.add_argument("--policy", type=Path)
+    parser.add_argument("--channel-key", required=True, type=Path)
     parser.add_argument("--resource-handle", default="")
     parser.add_argument("--expect-domain", default="")
     parser.add_argument("--expect-tenant", default="")
@@ -43,22 +43,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-instance", default="")
     parser.add_argument("--expect-fingerprint", default="")
     args = parser.parse_args(argv)
-    secret = None
-    if args.role == "credential-broker":
-        secret = sys.stdin.readline().rstrip("\n")
-        if not secret:
-            print("error: missing fill secret on stdin", file=sys.stderr)
-            return 1
+    try:
+        channel_private = _read_channel_key(args.channel_key)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     state_dir = args.state
     authority = args.authority or (state_dir / "authority")
     registry_path = args.registry or (state_dir / "admission.json")
     grants = None
-    policy = None
+    policy_dir = None
     if args.role == "keeper-core":
-        if args.policy is None:
-            print("error: keeper-core requires --policy", file=sys.stderr)
+        if args.policy is None or not args.policy.is_dir():
+            print("error: keeper-core requires a policy directory", file=sys.stderr)
             return 1
-        policy = load_policy(args.policy)
+        policy_dir = args.policy
         grants = GrantStore(
             authority / "grants.json",
             authority / "authority-journal.jsonl",
@@ -80,16 +79,16 @@ def main(argv: list[str] | None = None) -> int:
         access=load_access(args.access),
         registry_path=registry_path,
         grants=grants,
-        secret=secret,
         keeper_addr=args.keeper or None,
         cert=args.cert,
         key=args.key,
         ca=args.ca,
         grant_ttl=args.grant_ttl,
-        policy=policy,
+        policy_dir=policy_dir,
         resource_handle=args.resource_handle or None,
         expect_server=expect_server,
         authority=authority,
+        channel_private=channel_private,
         _lock=threading.Lock(),
     )
 
@@ -106,8 +105,16 @@ def main(argv: list[str] | None = None) -> int:
         cert=args.cert,
         key=args.key,
         ca=args.ca,
+        channel_private=channel_private,
     )
     return 0
+
+
+def _read_channel_key(path: Path) -> bytes:
+    raw = path.read_bytes()
+    if len(raw) != 32:
+        raise ValueError("channel key must be 32 bytes")
+    return raw
 
 
 if __name__ == "__main__":
