@@ -39,6 +39,9 @@ init() {
   local target=${CARGO_TARGET_DIR:-"$LAB/target"}
   mkdir -p "$LAB/logs" "$LAB/image" "$LAB/state" "$VMM_DIR/run" "$VMM_DIR/vm"
   [[ ! -e "$LAB/env.sh" ]] || die "$LAB/env.sh exists; remove it to re-initialise"
+  # Single-quoted lines are written literally: they expand when env.sh is
+  # sourced, relative to the LAB and CARGO_TARGET_DIR it exports.
+  # shellcheck disable=SC2016
   {
     echo "# Eggomi L1 simulated-SNP lab. Source this file before running the harness."
     printf 'export LAB=%q\n' "$LAB"

@@ -140,7 +140,7 @@ wait_for_boot() {
       [[ "$current" != "$last" ]] && log "$current"
       last=$current
       [[ -z "$error" || "$error" == null ]] || die "vm boot failed: $error"
-      [[ "$status" == running && "$progress" == done ]] && return
+      [[ "$status" == running && "$progress" == "done" ]] && return
       [[ "$status" != stopped && "$status" != exited ]] || die "vm stopped before boot completed"
     fi
     sleep 5
