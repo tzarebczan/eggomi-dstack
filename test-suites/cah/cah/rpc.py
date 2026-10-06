@@ -45,20 +45,23 @@ def call_rpc(
 ) -> Dict[str, Any]:
     """Send one request and return the response object.
 
-    ``expect_server`` pins the callee SPIFFE id and certificate fingerprint.
-    ``expect_server_role`` remains for callers that only know the role; the
-    lab fill demo passes the full pin.
+    mTLS requires ``expect_server``: trust domain, tenant, role, instance, and
+    certificate fingerprint. ``expect_server_role`` is not a substitute. A
+    caller that only knows the role is refused before the handshake.
     """
+    if transport == "mtls":
+        if cert is None or key is None or ca is None:
+            raise RuntimeError("mtls client is missing certificate material")
+        if not _pin_complete(expect_server):
+            raise RuntimeError("mtls client is missing the callee pin")
+    elif transport != "unix":
+        raise RuntimeError("transport must be unix or mtls")
     sock = connect(address, timeout=timeout)
     try:
         if transport == "mtls":
-            if cert is None or key is None or ca is None:
-                raise RuntimeError("mtls client is missing certificate material")
-            if expect_server is None and expect_server_role is None:
-                raise RuntimeError("mtls client is missing the expected server")
-            sock = _wrap_client(sock, cert, key, ca, expect_server, expect_server_role)
-        elif transport != "unix":
-            raise RuntimeError("transport must be unix or mtls")
+            assert cert is not None and key is not None and ca is not None
+            assert expect_server is not None
+            sock = _wrap_client(sock, cert, key, ca, expect_server)
         write_frame(sock, {"method": method, "body": body})
         response = read_frame(sock)
     finally:
@@ -176,8 +179,7 @@ def _wrap_client(
     cert: Path,
     key: Path,
     ca: Path,
-    expect_server: Optional[Dict[str, str]],
-    expect_server_role: Optional[str],
+    expect_server: Dict[str, str],
 ) -> ssl.SSLSocket:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -194,20 +196,26 @@ def _wrap_client(
         wrapped.close()
         raise RuntimeError("server certificate does not carry one spiffe uri")
     uri, fingerprint = peer
-    if expect_server is not None:
-        if (
-            uri["domain"] != expect_server["domain"]
-            or uri["tenant"] != expect_server["tenant"]
-            or uri["role"] != expect_server["role"]
-            or uri["instance"] != expect_server["instance"]
-            or fingerprint != expect_server["fingerprint"]
-        ):
-            wrapped.close()
-            raise RuntimeError("server certificate does not match the callee pin")
-    elif uri["role"] != expect_server_role:
+    if (
+        uri["domain"] != expect_server["domain"]
+        or uri["tenant"] != expect_server["tenant"]
+        or uri["role"] != expect_server["role"]
+        or uri["instance"] != expect_server["instance"]
+        or fingerprint != expect_server["fingerprint"]
+    ):
         wrapped.close()
-        raise RuntimeError("server certificate role does not match the callee")
+        raise RuntimeError("server certificate does not match the callee pin")
     return wrapped
+
+
+def _pin_complete(pin: Optional[Dict[str, str]]) -> bool:
+    """Return whether ``pin`` names the full callee identity."""
+    if pin is None:
+        return False
+    return all(
+        isinstance(pin.get(key), str) and bool(pin[key])
+        for key in ("domain", "tenant", "role", "instance", "fingerprint")
+    )
 
 
 def chmod_private(path: Path) -> None:
