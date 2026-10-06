@@ -152,15 +152,16 @@ does not return success. From the repository root, run `cargo test --manifest-pa
 
 ## Nested virtualization
 
-S0 and S1 cover only the outer dstack CVM. Running browser and keeper smolvms
-inside it additionally requires nested KVM to be exposed to the outer guest.
-`nested-kvm-probe.yml` reports what the guest sees. On the first L1 host the
-guest CPU showed `svm`, but the 0.6.0 guest kernel has no KVM, so `/dev/kvm`
-was missing.
-A cloud VM can therefore pass this milestone while remaining unsuitable for
-the later smolvm-inside-CVM suites. On hosts without nested virtualization,
-run smolvm host-native as the L2 baseline and keep the outer simulator smoke
-separate.
+S0 and S1 cover only the outer dstack CVM. smolvm subVMs inside an SNP CVM
+are not possible on real hardware today: Linux refuses `kvm_amd` inside an
+SEV guest, and AMD lists nested virtualization in SEV guests as a future
+feature (AMDESE/AMDSEV issue #63). Do not enable nested KVM in the lab guest;
+it would pass where real SNP fails. `nested-kvm-probe.yml` records what the
+guest sees. On the first L1 host the guest CPU showed `svm`, but the guest
+kernel has no KVM and `/dev/kvm` was missing. Inner isolation is pending a
+founder decision (see [ARCHITECTURE](../../docs/eggomi/ARCHITECTURE.md#inner-isolation)).
+Host-native smolvm (L2) remains the baseline for the non-confidential local
+computer only.
 
 Delete `.state/` between CI jobs or whenever rotating the mock seed. Never
 copy these roots or seeds into a production KMS, verifier, image, or secret

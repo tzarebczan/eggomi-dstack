@@ -131,7 +131,7 @@ deletes one of them. Then run `docker image rm dstack-tests-attestation:local`.
 | S6 `measurement-mismatch` | pass |
 | S6 `prod-root-unit` | pass |
 | S6 `prod-root-reject` | pass in 120 s, including the Docker build |
-| Nested KVM in guest | **no**: see below |
+| Nested KVM in guest | **no**, and kept off: not viable on real SNP (see below) |
 
 The production verifier refuses the mock chain at its first certificate
 check. The mock ASK is signed with ECDSA P-384 (`1.2.840.10045.4.3.3`), and
@@ -162,9 +162,21 @@ python3 "$DSTACK_VMM_CLI" --url "$DSTACK_VMM_URL" deploy --name nested-probe \
 curl http://127.0.0.1:19102/   # cpu_virt_flag=svm, dev_kvm=missing
 ```
 
-smolvm inside the CVM therefore needs a guest image whose kernel enables KVM.
-That changes the image measurement. It is a decision for the image owners,
-not a lab setting.
+Do not enable KVM in the guest kernel to make this pass. smolvm subVMs inside
+an SNP CVM are not possible on real hardware today: Linux refuses `kvm_amd`
+inside an SEV guest ("SVM: KVM is unsupported when running as an SEV
+guest"), and AMD lists nested virtualization in SEV guests as a future
+feature (AMDESE/AMDSEV issue #63). A lab with nested KVM would pass where
+real SNP fails. The probe stays as the evidence for this finding.
+
+"smolvm when nested" on L1 and smolvm on P1 are therefore not viable. The
+inner-isolation choice is pending a founder decision:
+
+1. one CVM per role (browser, keeper, and later omi each in its own SNP CVM);
+2. gVisor or Landlock sandboxes for each role inside one CVM, as in the CC1 lab;
+3. VMPL/SVSM partitions inside one CVM, later, once the stack supports them;
+4. smolvm only on the non-confidential local or desktop computer, where no
+   SNP boundary is claimed.
 
 ## Stop and teardown
 

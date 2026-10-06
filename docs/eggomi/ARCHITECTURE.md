@@ -11,8 +11,10 @@ inner isolation layers.
 1. Run each user workload inside a dstack CVM using AMD SEV-SNP in production.
 2. Develop and test without SNP hardware through dstack's existing
    `dstack-amd-sev-snp` simulated TEE.
-3. Use smolvm subVMs inside the CVM for isolation, memory ballooning, fast
-   lifecycle, and snapshots, not for attestation.
+3. Isolate roles (browser, keeper, later omi) from each other, not for
+   attestation. smolvm subVMs inside an SNP CVM are not possible on real
+   hardware today (see [Inner isolation](#inner-isolation)); the inner
+   mechanism is pending a founder decision.
 4. Measure RAM, CPU, and disk while exercising representative Eggomi activity.
 
 ## Layer model
@@ -34,6 +36,29 @@ flowchart TB
 | Outer dstack CVM | Hardware memory encryption in production, measurement, guest agent, KMS identity, encrypted storage, compose services | Fine-grained application sandboxing and elastic per-role memory |
 | Inner smolvm | Per-role process/kernel isolation, ballooning, checkpointing, and fast lifecycle | Attestation quotes, VCEK/TDX evidence, and KMS policy |
 | Host dstack-vmm | Outer-CVM launch policy, resource caps, and real/simulated TEE selection | Inner-smolvm scheduling |
+
+The diagram and the "Inner smolvm" row describe the original plan. They do
+not hold on real SNP hardware.
+
+### Inner isolation
+
+smolvm subVMs inside an SNP CVM are not possible on real hardware today.
+smolvm needs KVM in the guest, and Linux refuses `kvm_amd` inside an SEV
+guest ("SVM: KVM is unsupported when running as an SEV guest"). AMD lists
+nested virtualization in SEV guests as a future feature (AMDESE/AMDSEV issue
+#63). A simulated-SNP lab with nested KVM would pass where real SNP fails, so
+the lab does not enable it. The first L1 run confirms the gap from the other
+side: the guest CPU shows `svm`, but the dstack guest kernel has no KVM
+([nested-kvm-probe.yml](../../test-suites/eggomi/nested-kvm-probe.yml),
+[L1 runbook](l1-lab-runbook.md#nested-virtualization)).
+
+The inner-isolation mechanism is pending a founder decision. The options:
+
+1. one CVM per role (browser, keeper, and later omi each in its own SNP CVM);
+2. gVisor or Landlock sandboxes for each role inside one CVM, as in the CC1 lab;
+3. VMPL/SVSM partitions inside one CVM, later, once the stack supports them;
+4. smolvm only on the non-confidential local or desktop computer, where no
+   SNP boundary is claimed.
 
 ## Private working copies
 
@@ -160,14 +185,14 @@ Exact package placement belongs in the Eggomi repository and remains open.
 
 | Host | Outer | Inner | Purpose |
 | --- | --- | --- | --- |
-| Laptop/CI with KVM | simulated SNP CVM | smolvm when nested KVM works | full lab stack |
-| Laptop/CI | none | host-native smolvm | subVM baseline |
+| Laptop/CI with KVM | simulated SNP CVM | not smolvm: not viable on real SNP; pending the inner-isolation decision | outer lab stack |
+| Laptop/CI | none | host-native smolvm | subVM baseline; non-confidential computer only |
 | Cloud VM without nested KVM | simulated SNP CVM | container fallback | degraded CI |
-| AMD SNP bare metal | real SNP CVM | smolvm | production parity |
+| AMD SNP bare metal | real SNP CVM | not smolvm: not viable today; pending the inner-isolation decision | production parity |
 
 The first harness milestone covers the outer-CVM simulator and persistence
-boundary. smolvm inside the outer guest requires nested virtualization and is
-not implied by S0/S1 passing.
+boundary. smolvm inside the outer guest is not viable on real SNP, so no lab
+environment tests it, even where the host could expose nested KVM.
 
 ## Security invariants
 
@@ -190,7 +215,10 @@ not implied by S0/S1 passing.
 
 ## Open decisions
 
-- Nested-virtualization availability on target CI and cloud hosts.
+- Inner isolation inside an SNP CVM (founder decision): one CVM per role,
+  gVisor/Landlock sandboxes in one CVM, VMPL/SVSM partitions later, or smolvm
+  only on the non-confidential local computer. See
+  [Inner isolation](#inner-isolation).
 - Keeper checkpoint-as-scaling is closed for this stack. A live keeper is not branched by checkpoint. See [docs/cah/authority-model.md](../cah/authority-model.md).
 - Whether Matrix bridges run in keeper or a dedicated subVM.
 - CPU-only SNP rollout before any GPU-TEE work.
