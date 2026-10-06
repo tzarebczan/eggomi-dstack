@@ -2147,7 +2147,11 @@ fn make_vm_config(
     requirements: Option<&dstack_types::Requirements>,
 ) -> Result<serde_json::Value> {
     let platform = cfg.cvm.resolved_platform();
-    let is_amd_sev_snp = platform == crate::config::CvmPlatform::AmdSevSnp && !manifest.no_tee;
+    // no_tee selects a normal QEMU machine. A simulated SNP boot still has to
+    // publish the same launch inputs: dstack-tee-simulator signs MEASUREMENT
+    // from sev_snp_measurement, and the verifier recomputes that value.
+    let is_amd_sev_snp = (platform == crate::config::CvmPlatform::AmdSevSnp && !manifest.no_tee)
+        || manifest.simulated_tee == Some(dstack_types::TeeVariant::DstackAmdSevSnp);
     let is_tdx = platform == crate::config::CvmPlatform::Tdx && !manifest.no_tee;
     let is_gcp_tdx = manifest.simulated_tee == Some(dstack_types::TeeVariant::DstackGcpTdx);
     let is_aws_nitro_tpm =
@@ -3757,8 +3761,13 @@ mod tests {
         let build_hash = Sha256::digest(sha256sum.as_bytes()).to_vec();
         fs::write(image_dir.join("digest.txt"), hex::encode(&build_hash))?;
 
-        let sys_config_document =
-            make_sys_config(&config, &manifest, &compose_hash, Some(mr_config), None)?;
+        let sys_config_document = make_sys_config(
+            &config,
+            &manifest,
+            &compose_hash,
+            Some(mr_config.clone()),
+            None,
+        )?;
         let sys_config: serde_json::Value = serde_json::from_str(&sys_config_document)?;
         assert!(sys_config.get("tee_simulator").is_none());
         // A host must never nominate the trust anchor that authenticates its
@@ -3838,6 +3847,31 @@ mod tests {
         )
         .verify(&build_hash)
         .map_err(anyhow::Error::msg)?;
+
+        let mut non_snp_host = config.clone();
+        non_snp_host.cvm.platform = Some(CvmPlatform::Tdx);
+        let mut simulated = manifest.clone();
+        simulated.no_tee = true;
+        simulated.simulated_tee = Some(dstack_types::TeeVariant::DstackAmdSevSnp);
+        let simulated_sys = make_sys_config(
+            &non_snp_host,
+            &simulated,
+            &compose_hash,
+            Some(mr_config),
+            None,
+        )?;
+        let simulated_sys: serde_json::Value = serde_json::from_str(&simulated_sys)?;
+        let simulated_vm: serde_json::Value = serde_json::from_str(
+            simulated_sys["vm_config"]
+                .as_str()
+                .context("vm_config must be a string")?,
+        )?;
+        assert_eq!(
+            simulated_vm["sev_snp_measurement"].as_str(),
+            Some(measurement_document),
+            "simulated SNP on a non-SNP host must keep the image launch measurement"
+        );
+        assert_eq!(simulated_vm["mr_config"], sys_config["mr_config"]);
         Ok(())
     }
 }
