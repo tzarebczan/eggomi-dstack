@@ -9,6 +9,11 @@
       "method": "PrepareUse"
     },
     {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "QueryOutcome"
+    },
+    {
       "caller_role": "credential-broker",
       "callee": "keeper-core",
       "method": "ResolveUseGrant"

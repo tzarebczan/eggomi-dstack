@@ -46,11 +46,11 @@ The bytes on the wire are an opaque reference. `omi-runner` receives that
 reference from `PrepareUse` and the bound browser presents it to
 `CompleteFill`. Origin, audience, field, tenant, and destination come from
 the keeper policy. The record also stores those bindings. Resolve identifies
-the guard by a possession proof of its lease key, not by `observed_*`
+the guard by a possession proof of its channel key, not by `observed_*`
 fields. A missing fingerprint does not skip that check. The resolve body is
-one sealed credential (`cah-sealed-answer/v1`). The broker does not hold the
-plaintext. The fill canary lives in `authority/fill-secret`, which confined
-processes cannot read.
+one sealed credential (`cah-sealed-answer/v2`), authenticated with the
+keeper static key. The broker does not hold the plaintext. The fill canary
+lives in `authority/fill-secret`, which confined processes cannot read.
 
 An `omi-runner` request to the broker is `denied_role` on the access graph.
 That is not the copied-grant check. A second admitted `browser-guard` that
@@ -58,9 +58,11 @@ presents the same reference is `denied_recipient` at resolve, and the grant
 stays `issued` for the bound recipient. A certificate-fingerprint change is
 a rebind, with or without a pid: `boot_generation` advances and that
 instance's issued grants are revoked. Binding the previous fingerprint again
-does not restore them. A boot-generation mismatch is terminal `denied_boot`.
-`ReportOutcome` accepts `filled`, `refused`, or `unknown`. `QueryOutcome`
-returns that record to the same recipient.
+does not restore them. A channel public key change follows the same rule.
+A boot-generation mismatch is terminal `denied_boot`.
+`ReportOutcome` accepts `filled`, `refused`, or `unknown`. The first terminal
+report for a grant is final. `QueryOutcome` returns that record to the
+recipient and to the requester. A consumed grant with no report is `unknown`.
 
 ## Limits of this profile
 

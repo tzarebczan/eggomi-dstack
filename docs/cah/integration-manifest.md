@@ -110,7 +110,7 @@ VM has no `/dev/sev`, uid 1000 cannot open `/dev/kvm`, and S0 was not launched.
 | Lab CA key | `state/authority/certs/ca.key` (mode 0600), mTLS only. Confined processes hide `state/authority`. |
 | Instance keys | `state/authority/certs/<instance>.key` and `state/roles/<instance>/key.pem` (mode 0600), mTLS only. A confined process keeps only its own role directory. |
 | Fill secret | Broker stdin (`cah-synthetic-fill-v1`). Not a key file. Released only into `results/positive_fill.json` and `results/copied_owner_fill.json`. |
-| Grant store | `state/authority/grants.json`, `authority-journal.jsonl`, and `keeper-epoch` (mode 0600). The journal wins over a restored snapshot. |
+| Grant store | `state/authority/grants.json`, with the journal and keeper epoch at `state/host-fence/` (mode 0600). Restoring `authority/` does not revive a consumed grant. |
 | Registry | `state/admission.json`, lock `admission.json.lock`. Confined processes see it read-only. |
 
 | Gate | Status |

@@ -178,11 +178,35 @@ def resolve_use_grant(
     if presenter is None:
         return rpc_error("denied_recipient")
     preview = state.grants.get(parsed["grant_ref"])
-    if preview is not None:
-        audience = preview.get("audience")
-        if isinstance(audience, dict) and audience.get("channel_public"):
-            if auth.identity.channel_public != audience.get("channel_public"):
-                return rpc_error("denied_role")
+    if preview is None or preview.get("disposition") in ("consumed", "denied_boot"):
+        finished = state.grants.resolve(
+            parsed["grant_ref"],
+            presenter,
+            parsed["origin"],
+            parsed["operation_id"],
+            parsed["frame_id"],
+            parsed["navigation_generation"],
+            broker_instance=auth.identity.instance_id,
+            field=parsed["field"],
+            tenant=parsed["tenant"],
+        )
+        return rpc_error(str(finished["code"]))
+    audience = preview.get("audience") if isinstance(preview.get("audience"), dict) else {}
+    if auth.identity.channel_public != audience.get("channel_public"):
+        return rpc_error("denied_role")
+    secret = _fill_secret(state)
+    if secret is None or not presenter.channel_public or state.channel_private is None:
+        return rpc_error("denied_payload")
+    try:
+        sealed = _seal_grant(
+            preview,
+            secret,
+            challenge,
+            presenter.channel_public,
+            state.channel_private,
+        )
+    except ValueError:
+        return rpc_error("denied_payload")
     result = state.grants.resolve(
         parsed["grant_ref"],
         presenter,
@@ -196,14 +220,6 @@ def resolve_use_grant(
     )
     if not result["ok"]:
         return rpc_error(str(result["code"]))
-    grant = state.grants.get(parsed["grant_ref"])
-    secret = _fill_secret(state)
-    if grant is None or secret is None or not presenter.channel_public:
-        return rpc_error("denied_payload")
-    try:
-        sealed = _seal_grant(grant, secret, challenge, presenter.channel_public)
-    except ValueError:
-        return rpc_error("denied_payload")
     return rpc_ok(
         {
             "operation_id": result["operation_id"],
@@ -280,9 +296,16 @@ def report_outcome(
     outcome = body.get("outcome")
     if not isinstance(operation_id, str) or outcome not in _OUTCOMES:
         return rpc_error("denied_payload")
-    if not _outcome_recipient(state, operation_id, auth.identity):
+    grant = _consumed_grant(state, operation_id)
+    if grant is None or not _is_recipient(grant, auth.identity):
         return rpc_error("denied_payload")
-    _append_outcome(state, operation_id, str(outcome), auth.identity)
+    grant_ref = str(grant["grant_ref"])
+    existing = _first_outcome(state, grant_ref)
+    if existing is not None:
+        if existing == outcome:
+            return rpc_ok({"operation_id": operation_id, "outcome": outcome})
+        return rpc_error("denied_payload")
+    _append_outcome(state, grant_ref, operation_id, str(outcome), auth.identity)
     return rpc_ok({"operation_id": operation_id, "outcome": outcome})
 
 
@@ -291,18 +314,20 @@ def query_outcome(
 ) -> Dict[str, Any]:
     """Return the recorded outcome for one consumed operation.
 
-    A missing report is ``denied_payload``. ``unknown`` is returned as stored.
+    The recipient and the requester may query. A consumed grant with no
+    report is ``unknown``. The first terminal report for the grant is final.
     """
     if auth.identity is None:
         return rpc_error("denied_payload")
     operation_id = body.get("operation_id")
     if not isinstance(operation_id, str) or not operation_id:
         return rpc_error("denied_payload")
-    if not _outcome_recipient(state, operation_id, auth.identity):
+    grant = _consumed_grant(state, operation_id)
+    if grant is None or not _can_query(grant, auth.identity):
         return rpc_error("denied_payload")
-    found = _last_outcome(state, operation_id, auth.identity.instance_id)
+    found = _first_outcome(state, str(grant["grant_ref"]))
     if found is None:
-        return rpc_error("denied_payload")
+        return rpc_ok({"operation_id": operation_id, "outcome": "unknown"})
     return rpc_ok({"operation_id": operation_id, "outcome": found})
 
 
@@ -338,7 +363,11 @@ def _resolve_body(body: Dict[str, Any]) -> Optional[Dict[str, str]]:
 
 
 def _seal_grant(
-    grant: Dict[str, Any], secret: str, challenge: bytes, lease_public_hex: str
+    grant: Dict[str, Any],
+    secret: str,
+    challenge: bytes,
+    lease_public_hex: str,
+    keeper_private: bytes,
 ) -> Dict[str, Any]:
     lease = grant["lease"]
     remaining_ms = int((float(lease["expires_unix"]) - time.time()) * 1000)
@@ -367,6 +396,7 @@ def _seal_grant(
         task_id=str(grant["task"]["task_id"]),
         operation_id=str(grant["task"]["operation_id"]),
         resource_handle=str(grant["policy"]["resource_handle"]),
+        keeper_private=keeper_private,
     )
 
 
@@ -397,23 +427,48 @@ def _fields_ok(body: Dict[str, Any]) -> bool:
     return True
 
 
-def _outcome_recipient(
-    state: ServerState, operation_id: str, identity: WorkloadIdentity
-) -> bool:
+def _consumed_grant(
+    state: ServerState, operation_id: str
+) -> Optional[Dict[str, Any]]:
     if state.grants is None:
-        return False
+        return None
     grant = state.grants.find_operation(operation_id)
     if grant is None or grant["disposition"] != "consumed":
-        return False
-    return grant["recipient"]["instance_id"] == identity.instance_id
+        return None
+    return grant
+
+
+def _is_recipient(grant: Dict[str, Any], identity: WorkloadIdentity) -> bool:
+    recipient = grant.get("recipient")
+    return (
+        isinstance(recipient, dict)
+        and recipient.get("instance_id") == identity.instance_id
+        and recipient.get("role") == identity.role
+    )
+
+
+def _can_query(grant: Dict[str, Any], identity: WorkloadIdentity) -> bool:
+    if _is_recipient(grant, identity):
+        return True
+    requester = grant.get("requester")
+    return (
+        isinstance(requester, dict)
+        and requester.get("instance_id") == identity.instance_id
+        and requester.get("role") == identity.role
+    )
 
 
 def _append_outcome(
-    state: ServerState, operation_id: str, outcome: str, identity: WorkloadIdentity
+    state: ServerState,
+    grant_ref: str,
+    operation_id: str,
+    outcome: str,
+    identity: WorkloadIdentity,
 ) -> None:
-    path = state.state / "outcomes.jsonl"
+    path = state.authority / "outcomes.jsonl"
     line = json.dumps(
         {
+            "grant_ref": grant_ref,
             "operation_id": operation_id,
             "outcome": outcome,
             "recipient_instance": identity.instance_id,
@@ -422,6 +477,9 @@ def _append_outcome(
         sort_keys=True,
     )
     with state._lock:
+        if _first_outcome(state, grant_ref) is not None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
             handle.flush()
@@ -429,28 +487,21 @@ def _append_outcome(
         os.chmod(path, 0o600)
 
 
-def _last_outcome(
-    state: ServerState, operation_id: str, instance_id: str
-) -> Optional[str]:
-    path = state.state / "outcomes.jsonl"
+def _first_outcome(state: ServerState, grant_ref: str) -> Optional[str]:
+    path = state.authority / "outcomes.jsonl"
     if not path.exists():
         return None
-    found = None
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
-        if (
-            row.get("operation_id") == operation_id
-            and row.get("recipient_instance") == instance_id
-            and row.get("outcome") in _OUTCOMES
-        ):
-            found = str(row["outcome"])
-    return found
+        if row.get("grant_ref") == grant_ref and row.get("outcome") in _OUTCOMES:
+            return str(row["outcome"])
+    return None
 
 
 def _record_fill_context(state: ServerState, body: Dict[str, Any]) -> None:
-    path = state.state / "fill-context.jsonl"
+    path = state.authority / "fill-context.jsonl"
     line = json.dumps(
         {
             "operation_id": body["operation_id"],
@@ -460,7 +511,11 @@ def _record_fill_context(state: ServerState, body: Dict[str, Any]) -> None:
         },
         sort_keys=True,
     )
-    with state._lock:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-        os.chmod(path, 0o600)
+    try:
+        with state._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+            os.chmod(path, 0o600)
+    except OSError:
+        return

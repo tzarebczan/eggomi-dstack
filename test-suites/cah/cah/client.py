@@ -287,6 +287,7 @@ def _open_sealed(
         resource_handle=str(fixture["resource_handle"]),
         challenge=challenge,
         challenge_mono=challenge_mono,
+        keeper_public=_role_public(registry_path, "keeper-core"),
     )
     store = GuardStore(
         args.state / "fence" / args.instance,

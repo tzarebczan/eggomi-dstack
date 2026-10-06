@@ -15,6 +15,8 @@ from cah.crypto_lab import generate_private, public_key, wrap_private
 from cah.guard import GuardStore
 from cah.seal import LiveBinding, open_credential, seal_credential
 
+_KEEPER = generate_private()
+
 
 def _live(**overrides: object) -> LiveBinding:
     values: dict[str, object] = {
@@ -34,12 +36,15 @@ def _live(**overrides: object) -> LiveBinding:
         "resource_handle": "cred-lab-1",
         "challenge": bytes(range(32)),
         "challenge_mono": 1_000.0,
+        "keeper_public": public_key(_KEEPER),
     }
     values.update(overrides)
     return LiveBinding(**values)  # type: ignore[arg-type]
 
 
-def _seal(public: bytes, **overrides: object) -> dict[str, object]:
+def _seal(
+    public: bytes, keeper_private: bytes | None = None, **overrides: object
+) -> dict[str, object]:
     live = _live(**overrides)
     return seal_credential(
         public,
@@ -61,6 +66,7 @@ def _seal(public: bytes, **overrides: object) -> dict[str, object]:
         task_id=live.task_id,
         operation_id=live.operation_id,
         resource_handle=live.resource_handle,
+        keeper_private=_KEEPER if keeper_private is None else keeper_private,
     )
 
 
@@ -94,7 +100,7 @@ class GuardTests(unittest.TestCase):
             later = store.accept(blob, live, now_mono=1_001.0)
             self.assertEqual(later["code"], "unknown")
             self.assertNotIn("fill", later)
-            self.assertEqual(store.lookup("grant-1", str(blob["nonce"])), "unknown")
+            self.assertEqual(store.lookup("grant-1"), "unknown")
 
     def test_snapshot_of_the_guard_disk_does_not_revive_consume(self) -> None:
         """Restoring the wrapped key does not clear the fence journal."""
@@ -152,6 +158,57 @@ class GuardTests(unittest.TestCase):
             )
             self.assertEqual(refused["code"], "denied_payload")
             self.assertFalse((root / "fence" / "consumed.jsonl").exists())
+
+    def test_fresh_nonce_does_not_fill_again(self) -> None:
+        """Single-use is the grant, not the nonce."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            public = public_key(private)
+            live = _live()
+            first = store.accept(_seal(public), live, now_mono=1_001.0)
+            self.assertEqual(first.get("fill"), "cah-synthetic-fill-v1")
+            again = store.accept(_seal(public), live, now_mono=1_001.0)
+            self.assertTrue(again.get("repeat"))
+            self.assertNotIn("fill", again)
+            self.assertEqual(again["code"], "filled")
+
+    def test_throwaway_keeper_key_does_not_fill(self) -> None:
+        """A seal that did not use the registered keeper key is not a fill."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            blob = _seal(public_key(private), keeper_private=generate_private())
+            refused = store.accept(blob, _live(), now_mono=1_001.0)
+            self.assertEqual(refused["code"], "denied_payload")
+            self.assertNotIn("fill", refused)
+            self.assertFalse((root / "fence" / "consumed.jsonl").exists())
+
+    def test_missing_fence_file_does_not_delete_the_wrapped_key(self) -> None:
+        """A short read refuses the fill and leaves the wrap in place."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            (root / "fence" / "secret").unlink()
+            refused = store.accept(_seal(public_key(private)), _live(), now_mono=1_001.0)
+            self.assertEqual(refused["code"], "denied_recipient")
+            self.assertTrue((root / "channel.key.wrapped").is_file())
+
+    def test_advanced_epoch_rejects_a_restored_wrap(self) -> None:
+        """Moving the fence epoch destroys a wrap copied back from disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            wrapped = root / "channel.key.wrapped"
+            snapshot = wrapped.read_bytes()
+            self.assertEqual(store.advance_epoch(), 2)
+            refused = store.accept(_seal(public_key(private)), _live(), now_mono=1_001.0)
+            self.assertEqual(refused["code"], "denied_recipient")
+            self.assertFalse(wrapped.exists())
+            wrapped.write_bytes(snapshot)
+            again = store.accept(_seal(public_key(private)), _live(), now_mono=1_001.0)
+            self.assertEqual(again["code"], "denied_recipient")
+            self.assertFalse(wrapped.exists())
 
 
 def _store(root: Path, epoch: int) -> tuple[bytes, GuardStore]:

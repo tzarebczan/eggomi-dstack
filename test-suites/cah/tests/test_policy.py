@@ -79,6 +79,9 @@ class PolicyTests(unittest.TestCase):
             changed["tenant"] = "tenant-other"
             with self.assertRaises(ValueError):
                 publish_revision(directory, changed)
+            with self.assertRaises(ValueError):
+                publish_revision(directory, document)
+            self.assertEqual(load_current(directory)["policy_revision"], "pol-lab-2")
 
 
 if __name__ == "__main__":

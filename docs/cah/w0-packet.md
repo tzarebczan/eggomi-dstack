@@ -67,12 +67,13 @@ The stub broker does not implement them.
 | Lab CA key | `state/authority/certs/ca.key`, mode 0600, mTLS only | Keeper. Confined processes hide `state/authority`. The public certificate is `state/public/ca.crt`. |
 | Instance keys | `state/authority/certs/<instance>.key` and `state/roles/<instance>/key.pem`, mode 0600, mTLS only | That instance's mount keeps only its own role directory. Unix transport does not issue these keys. |
 | Fill secret | Not a file. Broker stdin, lab canary `cah-synthetic-fill-v1` | Broker memory. A successful `CompleteFill` may write it only to `results/positive_fill.json` and `results/copied_owner_fill.json`. |
-| Grant store | `state/authority/grants.json`, `authority-journal.jsonl`, `keeper-epoch`, mode 0600 | Keeper. The journal wins over a restored grant snapshot. |
+| Grant store | `state/authority/grants.json` plus `state/host-fence/authority-journal.jsonl` and `state/host-fence/keeper-epoch`, mode 0600 | Keeper. Restoring `state/authority` does not roll the epoch back or erase a journaled consume. |
 | Registry | `state/admission.json`, lock `admission.json.lock`, mode 0600 | Launcher and keeper write it under the lock. Confined processes see a read-only bind. |
 
-A certificate-fingerprint change advances `boot_generation`. The caller
-revokes that instance's issued grants on `rebound`, the same path as a pid
-rebind.
+A certificate-fingerprint change or a channel public key change advances
+`boot_generation`. The caller revokes that instance's issued grants on
+`rebound`, the same path as a pid rebind, and advances that guard's fence
+epoch.
 
 ## Route gates
 

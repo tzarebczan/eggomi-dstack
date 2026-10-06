@@ -1,8 +1,11 @@
-"""Seal one credential to a guard's per-lease key.
+"""Seal one fill to the guard's registered channel key.
 
-Every bound field is associated data. The guard rebuilds that data from
-values it checks itself. A field taken from the broker's frame is not used.
-The plaintext is the one-time credential. The broker never receives it.
+The seal is authenticated to the keeper static key. A broker that never
+called the keeper can encrypt to the guard public key and still cannot
+produce a tag the guard opens. Every bound field is associated data. The
+guard rebuilds that data from values it checks itself. A field taken from
+the broker's frame is not used. The plaintext is the standing fill secret
+for this use. The broker never receives it.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -18,7 +21,8 @@ from typing import Any, Dict, Mapping
 
 from .crypto_lab import aead_open, aead_seal, generate_private, hkdf_sha256, public_key, x25519
 
-SCHEMA = "cah-sealed-answer/v1"
+SCHEMA = "cah-sealed-answer/v2"
+_SEAL_INFO = b"cah-sealed-answer/v2"
 MAX_OFFSET_MS = 30_000
 
 
@@ -42,6 +46,7 @@ class LiveBinding:
     resource_handle: str
     challenge: bytes
     challenge_mono: float
+    keeper_public: bytes
 
 
 def seal_credential(
@@ -65,14 +70,17 @@ def seal_credential(
     task_id: str,
     operation_id: str,
     resource_handle: str,
+    keeper_private: bytes,
 ) -> Dict[str, Any]:
-    """Seal ``plaintext`` to ``lease_public`` and return the wire object.
+    """Seal ``plaintext`` to ``lease_public`` under the keeper static key.
 
+    ``lease_public`` is the guard's registered channel key. ``keeper_private``
+    is mixed into the KDF, so a throwaway key does not open at the guard.
     ``expiry_offset_ms`` is at most 30 seconds. The nonce is random and is
     covered by the associated data.
     """
-    if len(lease_public) != 32:
-        raise ValueError("lease public key must be 32 bytes")
+    if len(lease_public) != 32 or len(keeper_private) != 32:
+        raise ValueError("seal keys must be 32 bytes")
     if not plaintext:
         raise ValueError("sealed credential is empty")
     if len(expiry_challenge) != 32:
@@ -84,8 +92,10 @@ def seal_credential(
     nonce = generate_private()
     ephemeral_private = generate_private()
     ephemeral_public = public_key(ephemeral_private)
-    shared = x25519(ephemeral_private, lease_public)
-    key = hkdf_sha256(shared, b"cah-sealed-answer/v1")
+    shared = x25519(ephemeral_private, lease_public) + x25519(
+        keeper_private, lease_public
+    )
+    key = hkdf_sha256(shared, _SEAL_INFO)
     aad = associated_data(
         grant_ref=grant_ref,
         nonce=nonce,
@@ -129,7 +139,9 @@ def open_credential(lease_private: bytes, blob: Mapping[str, Any], live: LiveBin
     if len(lease_private) != 32:
         raise ValueError("lease private key must be 32 bytes")
     if blob.get("schema_version") != SCHEMA:
-        raise ValueError("sealed answer schema is not cah-sealed-answer/v1")
+        raise ValueError("sealed answer schema is not cah-sealed-answer/v2")
+    if len(live.keeper_public) != 32:
+        raise ValueError("keeper public key must be 32 bytes")
     nonce = _hex32(blob.get("nonce"), "nonce")
     ephemeral = _hex32(blob.get("ephemeral_public"), "ephemeral public key")
     tag = _hex32(blob.get("tag"), "tag")
@@ -168,8 +180,10 @@ def open_credential(lease_private: bytes, blob: Mapping[str, Any], live: LiveBin
         operation_id=live.operation_id,
         resource_handle=live.resource_handle,
     )
-    shared = x25519(lease_private, ephemeral)
-    key = hkdf_sha256(shared, b"cah-sealed-answer/v1")
+    shared = x25519(lease_private, ephemeral) + x25519(
+        lease_private, live.keeper_public
+    )
+    key = hkdf_sha256(shared, _SEAL_INFO)
     return aead_open(key, nonce, aad, raw_ciphertext, tag)
 
 

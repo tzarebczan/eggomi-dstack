@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from .grants import GrantStore
+from .grants import GrantStore, host_fence_paths
 from .registry import load_registry, save_registry
 from .rpc import rpc_error, rpc_ok
 
@@ -51,11 +51,8 @@ def admit_scoped(
         return rpc_error("denied_bootstrap")
     scope = json.loads(scope_path.read_text(encoding="utf-8"))
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    grants = GrantStore(
-        authority / "grants.json",
-        authority / "authority-journal.jsonl",
-        authority / "keeper-epoch",
-    )
+    journal_path, epoch_path = host_fence_paths(authority)
+    grants = GrantStore(authority / "grants.json", journal_path, epoch_path)
     if grants.bootstrap_used(digest) or scope.get("used") is True:
         return rpc_error("denied_bootstrap")
     expected = str(scope.get("token_sha256", ""))

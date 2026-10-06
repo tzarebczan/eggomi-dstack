@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from cah.grants import GrantStore
+from cah.grants import GrantStore, host_fence_paths
 from cah.registry import WorkloadIdentity
 
 
@@ -51,6 +52,12 @@ def _issue(store: GrantStore, recipient: WorkloadIdentity) -> dict[str, object]:
         60,
         "frame-1",
         "nav-1",
+        audience_role="credential-broker",
+        audience_instance="broker-1",
+        audience_key="aa" * 32,
+        field="password",
+        tenant="tenant-lab-1",
+        fence="fence-browser-1",
     )
 
 
@@ -81,6 +88,7 @@ class GrantTests(unittest.TestCase):
                 "op-1",
                 "frame-1",
                 "nav-1",
+                **_bound(),
             )
             self.assertTrue(ok["ok"])
             again = store.resolve(
@@ -212,6 +220,7 @@ class GrantTests(unittest.TestCase):
                 "op-1",
                 "frame-1",
                 "nav-1",
+                **_bound(),
             )
             self.assertTrue(ok["ok"])
 
@@ -232,6 +241,7 @@ class GrantTests(unittest.TestCase):
                 "op-1",
                 "frame-1",
                 "nav-1",
+                **_bound(),
             )
             self.assertTrue(ok["ok"])
             path.write_bytes(snapshot)
@@ -381,6 +391,105 @@ class GrantTests(unittest.TestCase):
             reopened.note_bootstrap("cd" * 32)
             again = GrantStore(path)
             self.assertEqual(again.get(str(record["grant_ref"]))["disposition"], "issued")
+
+    def test_empty_bindings_match_nothing(self) -> None:
+        """An empty field, tenant, or audience cannot be issued or matched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GrantStore(Path(tmp) / "grants.json")
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            with self.assertRaises(ValueError):
+                store.issue(
+                    _id("omi-runner", "omi-1", "boot-omi-1"),
+                    recipient,
+                    "pol",
+                    "cred",
+                    "https://lab.invalid/signin",
+                    "task",
+                    "op-1",
+                    "lease",
+                    1,
+                    60,
+                    "frame-1",
+                    "nav-1",
+                    audience_role="credential-broker",
+                    audience_instance="broker-1",
+                    audience_key="aa" * 32,
+                    field="",
+                    tenant="tenant-lab-1",
+                    fence="fence-browser-1",
+                )
+            record = _issue(store, recipient)
+            blank = store.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                broker_instance="",
+                field="",
+                tenant="",
+            )
+            self.assertEqual(blank["code"], "denied_role")
+            self.assertEqual(store.get(str(record["grant_ref"]))["uses"], 0)
+
+    def test_other_store_reloads_when_the_epoch_matches(self) -> None:
+        """A stale in-memory map does not overwrite grants saved at the new epoch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "grants.json"
+            reader = GrantStore(path)
+            writer = GrantStore(path)
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            record = _issue(writer, recipient)
+            writer.note_bootstrap("ab" * 32)
+            added = _issue(reader, _id("browser-guard", "browser-2", "boot-2"))
+            reloaded = GrantStore(path)
+            self.assertIsNotNone(reloaded.get(str(record["grant_ref"])))
+            self.assertIsNotNone(reloaded.get(str(added["grant_ref"])))
+
+    def test_restoring_authority_does_not_revive_consume(self) -> None:
+        """The host fence sits outside authority/, so a restored snapshot stays consumed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority = root / "authority"
+            authority.mkdir()
+            journal, epoch = host_fence_paths(authority)
+            store = GrantStore(authority / "grants.json", journal, epoch)
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            record = _issue(store, recipient)
+            snapshot = root / "snap"
+            shutil.copytree(authority, snapshot)
+            ok = store.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                **_bound(),
+            )
+            self.assertTrue(ok["ok"])
+            shutil.rmtree(authority)
+            shutil.copytree(snapshot, authority)
+            reloaded = GrantStore(authority / "grants.json", journal, epoch)
+            again = reloaded.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                **_bound(),
+            )
+            self.assertEqual(again["code"], "grant_consumed")
+
+
+def _bound() -> dict[str, str]:
+    return {
+        "broker_instance": "broker-1",
+        "field": "password",
+        "tenant": "tenant-lab-1",
+    }
 
 
 if __name__ == "__main__":

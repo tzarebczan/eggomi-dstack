@@ -14,7 +14,7 @@ from typing import Any
 
 from .access import load_access
 from .auth import AuthContext
-from .grants import GrantStore
+from .grants import GrantStore, host_fence_paths
 from .handlers import ServerState, dispatch
 from .rpc import serve
 
@@ -58,11 +58,8 @@ def main(argv: list[str] | None = None) -> int:
             print("error: keeper-core requires a policy directory", file=sys.stderr)
             return 1
         policy_dir = args.policy
-        grants = GrantStore(
-            authority / "grants.json",
-            authority / "authority-journal.jsonl",
-            authority / "keeper-epoch",
-        )
+        journal_path, epoch_path = host_fence_paths(authority)
+        grants = GrantStore(authority / "grants.json", journal_path, epoch_path)
     expect_server = None
     if args.expect_fingerprint:
         expect_server = {

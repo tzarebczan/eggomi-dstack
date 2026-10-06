@@ -27,18 +27,21 @@ launcher writes that registry. Servers read it from disk.
 The requester cannot choose origin, lease, audience, field, tenant, or
 recipient; a forged origin is `denied_payload` and stores nothing.
 `ResolveUseGrant` returns one credential sealed to the recipient guard's
-per-lease key. `credential-broker` forwards that sealed answer and holds no
-standing secret. The guard opens it against values it already has. An
-`omi-runner` call to the broker is `denied_role` on the access graph and
-does not inspect the grant. A second admitted browser that presents the same
-`grant_ref` is `denied_recipient` at resolve. Those are different checks. A
-boot id only advances. A pid rebind and a certificate fingerprint change
-both advance `boot_generation` and revoke that instance's issued grants. A
+registered channel key and authenticated with the keeper static key.
+`credential-broker` forwards that sealed answer and holds no standing
+secret. The guard opens it against values it already has, including the
+keeper public key in the registry. An `omi-runner` call to the broker is
+`denied_role` on the access graph and does not inspect the grant. A second
+admitted browser that presents the same `grant_ref` is `denied_recipient`
+at resolve. Those are different checks. A boot id only advances. A pid
+rebind, a certificate fingerprint change, and a channel public key change
+all advance `boot_generation` and revoke that instance's issued grants. A
 generation mismatch is `denied_boot`. An unadmitted certificate and a
 connector with no allow edge are refused. Role, instance, and frame
 mismatches leave the grant issued. A second redeem of a consumed grant
 returns `grant_consumed`. `unknown` is the recorded outcome when the answer
-was lost after the guard's durable record.
+was lost after the guard's durable record, and it is also the query result
+when a consumed grant has no report yet.
 
 The authority rules, including why `get_secret` and keeper
 checkpoint-as-scaling are not this model, are in

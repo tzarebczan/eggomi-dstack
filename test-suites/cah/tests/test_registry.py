@@ -19,6 +19,7 @@ from cah.registry import (
     WorkloadIdentity,
     bind_process,
     load_registry,
+    rebind_channel,
     save_registry,
     set_boot,
 )
@@ -118,6 +119,12 @@ class RegistryTests(unittest.TestCase):
                 60,
                 "frame-1",
                 "nav-1",
+                audience_role="credential-broker",
+                audience_instance="broker-1",
+                audience_key="cc" * 32,
+                field="password",
+                tenant="tenant-lab-1",
+                fence="fence-browser-1",
             )
             self.assertEqual(
                 store.get(str(record["grant_ref"]))["disposition"], "issued"
@@ -190,8 +197,105 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(second.kind, "rebound")
             self.assertEqual(second.boot_generation, 2)
 
+    def test_channel_key_rebind_advances_and_return_does_not_revive(self) -> None:
+        """Channel key A to B is generation 2, and A again does not revive the grant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "admission.json"
+            grants_path = root / "grants.json"
+            journal_path = root / "authority-journal.jsonl"
+            epoch_path = root / "keeper-epoch"
+            key_a = "aa" * 32
+            key_b = "bb" * 32
+            save_registry(
+                path,
+                AdmissionRegistry(
+                    trust_domain="lab.cah",
+                    tenant="tenant-lab-1",
+                    workloads=[
+                        {
+                            "role": "browser-guard",
+                            "instance_id": "browser-1",
+                            "boot_id": "boot-1",
+                            "boot_generation": 1,
+                            "boot_history": ["boot-1"],
+                            "cert_fingerprint": "fp",
+                            "pid": None,
+                            "starttime": None,
+                            "channel_public": None,
+                        }
+                    ],
+                ),
+            )
+            first = rebind_channel(path, "browser-1", key_a)
+            self.assertEqual(first.kind, "bound")
+            self.assertEqual(first.boot_generation, 1)
+            repeated = rebind_channel(path, "browser-1", key_a)
+            self.assertEqual(repeated.kind, "unchanged")
+            self.assertEqual(repeated.boot_generation, 1)
+            store = GrantStore(grants_path, journal_path, epoch_path)
+            recipient = _party("browser-guard", "browser-1", "boot-1", "fp", key_a)
+            record = store.issue(
+                _party("omi-runner", "omi-1", "boot-omi-1", "omi-fp"),
+                recipient,
+                "pol",
+                "cred",
+                "https://lab.invalid/signin",
+                "task",
+                "op-1",
+                "lease",
+                1,
+                60,
+                "frame-1",
+                "nav-1",
+                audience_role="credential-broker",
+                audience_instance="broker-1",
+                audience_key="cc" * 32,
+                field="password",
+                tenant="tenant-lab-1",
+                fence="fence-browser-1",
+            )
+            snapshot = grants_path.read_bytes()
+            epoch_snapshot = epoch_path.read_bytes()
+            second = rebind_channel(path, "browser-1", key_b)
+            self.assertEqual(second.kind, "rebound")
+            self.assertEqual(second.boot_generation, 2)
+            revoke_instance_grants(grants_path, journal_path, epoch_path, "browser-1")
+            third = rebind_channel(path, "browser-1", key_a)
+            self.assertEqual(third.kind, "rebound")
+            self.assertEqual(third.boot_generation, 3)
+            grants_path.write_bytes(snapshot)
+            epoch_path.write_bytes(epoch_snapshot)
+            reloaded = GrantStore(grants_path, journal_path, epoch_path)
+            revived = reloaded.resolve(
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+                broker_instance="broker-1",
+                field="password",
+                tenant="tenant-lab-1",
+            )
+            self.assertEqual(revived["code"], "denied_boot")
+            raw = load_registry(path)
+            row = next(item for item in raw.workloads if item.get("instance_id") == "browser-1")
+            row["channel_public"] = key_b
+            save_registry(path, raw)
+            rewritten = load_registry(path).find_instance("browser-1")
+            self.assertIsNotNone(rewritten)
+            assert rewritten is not None
+            self.assertEqual(rewritten.boot_generation, 4)
 
-def _party(role: str, instance: str, boot: str, fingerprint: str) -> WorkloadIdentity:
+
+def _party(
+    role: str,
+    instance: str,
+    boot: str,
+    fingerprint: str,
+    channel: str | None = None,
+) -> WorkloadIdentity:
     """Build one possession identity for a grant fixture."""
     return WorkloadIdentity(
         trust_domain="lab.cah",
@@ -203,6 +307,7 @@ def _party(role: str, instance: str, boot: str, fingerprint: str) -> WorkloadIde
         cert_fingerprint=fingerprint,
         pid=None,
         starttime=None,
+        channel_public=channel,
     )
 
 

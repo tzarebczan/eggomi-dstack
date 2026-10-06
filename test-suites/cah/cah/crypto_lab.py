@@ -71,7 +71,10 @@ def x25519(scalar: bytes, point: bytes) -> bytes:
     if swap:
         x2, x3 = x3, x2
         z2, z3 = z3, z2
-    return _encode_u((x2 * pow(z2, P - 2, P)) % P)
+    out = _encode_u((x2 * pow(z2, P - 2, P)) % P)
+    if out == b"\x00" * 32:
+        raise ValueError("x25519 output is all zeros")
+    return out
 
 
 def hkdf_sha256(ikm: bytes, info: bytes, length: int = 32) -> bytes:
@@ -93,17 +96,15 @@ def aead_seal(key: bytes, nonce: bytes, aad: bytes, plaintext: bytes) -> Tuple[b
     """Encrypt ``plaintext`` and return ``(ciphertext, tag)``.
 
     The keystream is HMAC-SHA256 in counter mode. The tag is HMAC-SHA256
-    over the nonce, associated data, and ciphertext. This is a lab AEAD
-    for the harness, not a production suite.
+    over length-prefixed nonce, associated data, and ciphertext. This is a
+    lab AEAD for the harness, not a production suite.
     """
     if len(key) != 32:
         raise ValueError("aead key must be 32 bytes")
     if not nonce:
         raise ValueError("aead nonce is empty")
     ciphertext = _xor(plaintext, _keystream(key, nonce, len(plaintext)))
-    tag = hmac.new(
-        key, b"cah-aead/v1" + nonce + aad + ciphertext, hashlib.sha256
-    ).digest()
+    tag = hmac.new(key, _aead_tag_input(nonce, aad, ciphertext), hashlib.sha256).digest()
     return ciphertext, tag
 
 
@@ -111,9 +112,7 @@ def aead_open(key: bytes, nonce: bytes, aad: bytes, ciphertext: bytes, tag: byte
     """Return the plaintext, or raise ``ValueError`` when the tag does not match."""
     if len(key) != 32 or len(tag) != 32:
         raise ValueError("aead open inputs are the wrong size")
-    expect = hmac.new(
-        key, b"cah-aead/v1" + nonce + aad + ciphertext, hashlib.sha256
-    ).digest()
+    expect = hmac.new(key, _aead_tag_input(nonce, aad, ciphertext), hashlib.sha256).digest()
     if not hmac.compare_digest(expect, tag):
         raise ValueError("aead tag does not match")
     return _xor(ciphertext, _keystream(key, nonce, len(ciphertext)))
@@ -177,6 +176,21 @@ def _decode_u(point: bytes) -> int:
 
 def _encode_u(value: int) -> bytes:
     return (value % P).to_bytes(32, "little")
+
+
+def _aead_tag_input(nonce: bytes, aad: bytes, ciphertext: bytes) -> bytes:
+    """Return the length-prefixed tag input for the lab AEAD."""
+    return b"".join(
+        (
+            b"cah-aead/v2",
+            len(nonce).to_bytes(8, "big"),
+            nonce,
+            len(aad).to_bytes(8, "big"),
+            aad,
+            len(ciphertext).to_bytes(8, "big"),
+            ciphertext,
+        )
+    )
 
 
 def _keystream(key: bytes, nonce: bytes, size: int) -> bytes:

@@ -27,7 +27,8 @@ from typing import Any, Dict, List, Optional
 from .admission import admit_scoped
 from .confine import popen_confined
 from .crypto_lab import generate_private, public_key, wrap_private
-from .grants import revoke_instance_grants
+from .grants import host_fence_paths, revoke_instance_grants
+from .guard import GuardStore
 from .metrics import load_schema, measurement, sum_present, validate_record
 from .policy import load_policy, publish_revision
 from .registry import (
@@ -89,6 +90,8 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, An
     authority = state / "authority"
     authority.mkdir(mode=0o700)
     (state / "roles").mkdir()
+    (state / "fence").mkdir(mode=0o700)
+    (state / "host-fence").mkdir(mode=0o700)
     instances = [(role, instance) for role, instance, _boot in SERVERS + CLIENTS]
     instances.append(("browser-guard", "stranger-1"))
     if transport == "mtls":
@@ -482,10 +485,11 @@ def _run_cases(
         operation_id="op-boot",
     )
     set_boot(state / "admission.json", "browser-1", "boot-browser-1-next")
+    journal_path, epoch_path = host_fence_paths(state / "authority")
     revoke_instance_grants(
         state / "authority" / "grants.json",
-        state / "authority" / "authority-journal.jsonl",
-        state / "authority" / "keeper-epoch",
+        journal_path,
+        epoch_path,
         "browser-1",
     )
     held_case(
@@ -806,10 +810,19 @@ def _spawn(
     role_dir.mkdir(parents=True, exist_ok=True)
     if not confine:
         return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, env=env)
+    keep_dirs = [role_dir]
+    own_fence = state / "fence" / instance
+    if own_fence.is_dir():
+        keep_dirs.append(own_fence)
     return popen_confined(
         cmd,
-        hide_dirs=[state / "authority", state / "roles"],
-        keep_dirs=[role_dir],
+        hide_dirs=[
+            state / "authority",
+            state / "roles",
+            state / "fence",
+            state / "host-fence",
+        ],
+        keep_dirs=keep_dirs,
         ro_files=[state / "admission.json"],
         env=env,
         stdin=stdin,
@@ -987,12 +1000,17 @@ def _bootstrap_fields() -> Dict[str, str]:
 def _bind(state: Path, instance: str, pid: int) -> BindResult:
     result = bind_process(state / "admission.json", instance, pid)
     if result.kind == "rebound":
+        journal_path, epoch_path = host_fence_paths(state / "authority")
         revoke_instance_grants(
             state / "authority" / "grants.json",
-            state / "authority" / "authority-journal.jsonl",
-            state / "authority" / "keeper-epoch",
+            journal_path,
+            epoch_path,
             instance,
         )
+        fence = state / "fence" / instance
+        if fence.is_dir():
+            wrapped = state / "roles" / instance / "channel.key.wrapped"
+            GuardStore(fence, wrapped).advance_epoch()
     return result
 
 
@@ -1051,8 +1069,10 @@ def _wait_ready(
     ready = state / "ready" / role
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        if ready.exists():
-            return ready.read_text(encoding="utf-8").strip()
+        if ready.is_file():
+            text = ready.read_text(encoding="utf-8").strip()
+            if text:
+                return text
         if proc.poll() is not None:
             raise RuntimeError(
                 f"{role} exited early: {log_path.read_text(encoding='utf-8')}"

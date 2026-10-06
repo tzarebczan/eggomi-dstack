@@ -6,9 +6,10 @@ time. The registered channel key, or a certificate fingerprint, is the
 possession proof on the keyed channel. A self-declared role in an RPC body
 is not consulted.
 
-Boot generations only advance. Rebinding a pid, a start time, or a
-certificate fingerprint mints a new generation. A fingerprint change is a
-rebind whether or not the row has a pid. An older boot id is refused.
+Boot generations only advance. Rebinding a pid, a start time, a
+certificate fingerprint, or a channel public key mints a new generation. A
+fingerprint change is a rebind whether or not the row has a pid. Returning
+to an earlier channel key is another rebind. An older boot id is refused.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -233,6 +234,36 @@ def bind_process(
     return _mutate(path, mutate)
 
 
+def rebind_channel(path: Path, instance_id: str, channel_public: str) -> BindResult:
+    """Install or rotate one instance's Unix channel public key.
+
+    The first write onto an empty ``channel_public`` does not advance
+    ``boot_generation``. Any later change does, including a return to a key
+    that was used before. The caller revokes outstanding grants on
+    ``rebound`` and advances that guard's fence epoch.
+    """
+    _require_channel(channel_public)
+
+    def mutate(registry: AdmissionRegistry) -> BindResult:
+        for row in registry.workloads:
+            if row.get("instance_id") != instance_id:
+                continue
+            current = row.get("channel_public")
+            if isinstance(current, str) and current == channel_public:
+                return BindResult(
+                    "unchanged", instance_id, _generation(row.get("boot_generation"))
+                )
+            fresh = not (isinstance(current, str) and bool(current))
+            if not fresh:
+                row["boot_generation"] = _generation(row.get("boot_generation")) + 1
+            row["channel_public"] = channel_public
+            kind = "bound" if fresh else "rebound"
+            return BindResult(kind, instance_id, _generation(row.get("boot_generation")))
+        raise ValueError(f"instance {instance_id} is not admitted")
+
+    return _mutate(path, mutate)
+
+
 def set_boot(path: Path, instance_id: str, boot_id: str) -> int:
     """Advance one instance to a boot id it has not used before.
 
@@ -262,8 +293,13 @@ def set_boot(path: Path, instance_id: str, boot_id: str) -> int:
 
 
 def save_registry(path: Path, registry: AdmissionRegistry) -> None:
-    """Atomically replace the registry file."""
+    """Atomically replace the registry file.
+
+    A channel public key that changes from one non-empty value to another
+    advances ``boot_generation`` when the caller has not already done so.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    _advance_changed_channels(path, registry)
     for row in registry.workloads:
         if "boot_generation" not in row:
             row["boot_generation"] = 1
@@ -306,6 +342,37 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.write_text(text, encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    previous = load_registry(path)
+    old_rows = {row.get("instance_id"): row for row in previous.workloads}
+    for row in registry.workloads:
+        old = old_rows.get(row.get("instance_id"))
+        if not isinstance(old, dict):
+            continue
+        old_channel = old.get("channel_public")
+        new_channel = row.get("channel_public")
+        if (
+            isinstance(old_channel, str)
+            and old_channel
+            and isinstance(new_channel, str)
+            and new_channel
+            and old_channel != new_channel
+            and _generation(row.get("boot_generation")) <= _generation(old.get("boot_generation"))
+        ):
+            row["boot_generation"] = _generation(old.get("boot_generation")) + 1
+
+
+def _require_channel(value: str) -> None:
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("channel public key is not hex") from exc
+    if len(raw) != 32:
+        raise ValueError("channel public key must be 32 bytes")
 
 
 def _generation(value: object) -> int:

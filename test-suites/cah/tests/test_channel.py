@@ -231,9 +231,14 @@ class PidfdTests(unittest.TestCase):
             thread.start()
             ready = root / "ready" / "keeper-core"
             deadline = __import__("time").monotonic() + 5
-            while not ready.exists() and __import__("time").monotonic() < deadline:
+            address = ""
+            while __import__("time").monotonic() < deadline:
+                if ready.is_file() and ready.stat().st_size:
+                    address = ready.read_text(encoding="utf-8").strip().removeprefix("unix:")
+                    if address:
+                        break
                 __import__("time").sleep(0.02)
-            address = ready.read_text(encoding="utf-8").strip().removeprefix("unix:")
+            self.assertTrue(address)
             conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             conn.connect(address)
             marker = root / "child.out"
@@ -241,19 +246,26 @@ class PidfdTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-c",
-                    "import socket,sys; "
-                    "s=socket.socket(fileno=int(sys.argv[1])); "
-                    "s.sendall(b'not-a-handshake'); "
-                    "s.settimeout(2)\n"
-                    "try:\n data=s.recv(128)\nexcept Exception:\n data=b''\n"
-                    "open(sys.argv[2],'wb').write(data)",
+                    "import socket,sys\n"
+                    "from cah.channel import client_handshake\n"
+                    "from cah.crypto_lab import generate_private\n"
+                    "sock=socket.socket(fileno=int(sys.argv[1]))\n"
+                    "server=bytes.fromhex(sys.argv[3])\n"
+                    "try:\n"
+                    " client_handshake(sock, generate_private(), server)\n"
+                    " status=b'handshake-ok'\n"
+                    "except Exception as exc:\n"
+                    " status=type(exc).__name__.encode()+b':'+str(exc).encode()\n"
+                    "open(sys.argv[2],'wb').write(status)\n",
                     str(conn.fileno()),
                     str(marker),
+                    public_key(server_key).hex(),
                 ],
                 pass_fds=(conn.fileno(),),
             )
             child.wait(timeout=5)
             self.assertEqual(calls, [])
+            self.assertNotIn(b"handshake-ok", marker.read_bytes())
             self.assertNotIn(b'"ok"', marker.read_bytes())
             other = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             other.connect(address)

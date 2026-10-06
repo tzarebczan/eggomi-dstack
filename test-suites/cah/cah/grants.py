@@ -4,11 +4,12 @@ The wire value is a random reference. Keeper stores the binding: requester,
 recipient possession, policy, task, lease, and destination. A copied reference
 presented by another admitted browser is refused, and the grant stays unused.
 
-Consumption and boot denial are appended to a journal outside the grant
-snapshot. Reloading an older ``grants.json`` does not revive a journaled
-grant. The wire code for a boot mismatch is ``denied_boot``. Use ttl is
-capped at 60 seconds. The sealed credential's own expiry is a separate
-30 second guard check.
+Consumption and boot denial are appended to a journal. The production
+journal and keeper epoch live under ``state/host-fence``, outside
+``authority/``. Restoring ``authority/`` does not revive a consumed grant.
+The wire code for a boot mismatch is ``denied_boot``. Use ttl is capped at
+60 seconds. The sealed credential's own expiry is a separate 30 second
+guard check. Empty audience, field, and tenant match nothing.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -87,6 +88,9 @@ class GrantStore:
             raise ValueError("recipient has no possession proof")
         if not frame_id or not navigation_generation:
             raise ValueError("destination binding is empty")
+        if not _nonempty(audience_role, audience_instance, field, tenant, fence):
+            raise ValueError("audience, field, tenant, and fence must be non-empty")
+        _require_public(audience_key)
         now_unix = time.time()
         record = {
             "schema_version": SCHEMA,
@@ -195,15 +199,16 @@ class GrantStore:
             if origin != grant["policy"]["origin"]:
                 return {"ok": False, "code": "denied_origin"}
             audience = grant.get("audience") if isinstance(grant.get("audience"), dict) else {}
-            if broker_instance is not None and audience.get("instance_id") not in (
-                "",
-                None,
-                broker_instance,
+            stored_broker = audience.get("instance_id")
+            if (
+                not isinstance(stored_broker, str)
+                or not stored_broker
+                or broker_instance != stored_broker
             ):
                 return {"ok": False, "code": "denied_role"}
-            if field is not None and grant.get("field") not in ("", None, field):
+            if not _exact(grant.get("field"), field):
                 return {"ok": False, "code": "denied_payload"}
-            if tenant is not None and grant.get("tenant") not in ("", None, tenant):
+            if not _exact(grant.get("tenant"), tenant):
                 return {"ok": False, "code": "denied_payload"}
             self._terminal_locked(grant_ref, "consumed")
             return {
@@ -274,12 +279,20 @@ class GrantStore:
 
     def _sync_locked(self) -> None:
         self._ensure_epoch_locked()
-        previous = self._epoch
         self._epoch = _read_epoch(self.epoch_path)
         self._read_journal_locked()
-        if self._epoch != previous and self.path.exists():
+        if self.path.exists():
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and raw.get("epoch") != self._epoch:
+            file_epoch = raw.get("epoch") if isinstance(raw, dict) else None
+            grants = raw.get("grants") if isinstance(raw, dict) else None
+            if file_epoch == self._epoch and isinstance(grants, dict):
+                loaded: Dict[str, Dict[str, Any]] = {}
+                for key, value in grants.items():
+                    if isinstance(key, str) and isinstance(value, dict):
+                        _refresh_deadline(value)
+                        loaded[key] = value
+                self._grants = loaded
+            else:
                 self._grants = {
                     ref: grant
                     for ref, grant in self._grants.items()
@@ -351,6 +364,16 @@ class GrantStore:
             yield
 
 
+def host_fence_paths(authority: Path) -> tuple[Path, Path]:
+    """Return the consume journal and keeper epoch outside ``authority``.
+
+    A snapshot of ``authority/`` does not include these files. Restoring that
+    snapshot cannot roll the epoch backward or erase a journaled consume.
+    """
+    fence = authority.parent / "host-fence"
+    return fence / "authority-journal.jsonl", fence / "keeper-epoch"
+
+
 def revoke_instance_grants(
     grants_path: Path,
     journal_path: Path,
@@ -400,6 +423,24 @@ def revoke_instance_grants(
         os.chmod(tmp, 0o600)
         os.replace(tmp, grants_path)
         return count
+
+
+def _nonempty(*values: str) -> bool:
+    return all(isinstance(value, str) and bool(value) for value in values)
+
+
+def _exact(stored: object, presented: Optional[str]) -> bool:
+    """Return whether ``presented`` is the non-empty stored binding."""
+    return isinstance(stored, str) and bool(stored) and presented == stored
+
+
+def _require_public(value: str) -> None:
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("audience key is not hex") from exc
+    if len(raw) != 32:
+        raise ValueError("audience key must be 32 bytes")
 
 
 def _possession_matches(recipient: Dict[str, Any], observed: WorkloadIdentity) -> bool:

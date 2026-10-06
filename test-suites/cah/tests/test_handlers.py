@@ -15,7 +15,9 @@ from pathlib import Path
 from cah.access import load_access
 from cah.admission import admit_scoped
 from cah.auth import AuthContext
-from cah.grants import GrantStore
+from cah.crypto_lab import generate_private, public_key
+from cah.grants import GrantStore, host_fence_paths
+from cah.seal import guard_proof, proof_transcript
 from cah.handlers import ServerState, dispatch
 from cah.policy import load_policy, publish_revision
 from cah.registry import AdmissionRegistry, WorkloadIdentity, save_registry
@@ -180,6 +182,13 @@ class HandlerTests(unittest.TestCase):
                 tenant="tenant-lab-1",
             )
             self.assertTrue(resolved["ok"], resolved)
+            quiet = dispatch(
+                state,
+                _auth(_identity("omi-runner", "omi-1")),
+                "QueryOutcome",
+                {"operation_id": "op-positive"},
+            )
+            self.assertEqual(quiet["body"].get("outcome"), "unknown")
             reported = dispatch(
                 state,
                 _auth(presenter),
@@ -194,6 +203,27 @@ class HandlerTests(unittest.TestCase):
                 {"operation_id": "op-positive"},
             )
             self.assertEqual(queried["body"].get("outcome"), "unknown")
+            asked = dispatch(
+                state,
+                _auth(_identity("omi-runner", "omi-1")),
+                "QueryOutcome",
+                {"operation_id": "op-positive"},
+            )
+            self.assertEqual(asked["body"].get("outcome"), "unknown")
+            overwritten = dispatch(
+                state,
+                _auth(presenter),
+                "ReportOutcome",
+                {"operation_id": "op-positive", "outcome": "filled"},
+            )
+            self.assertEqual(overwritten["code"], "denied_payload")
+            still = dispatch(
+                state,
+                _auth(_identity("omi-runner", "omi-1")),
+                "QueryOutcome",
+                {"operation_id": "op-positive"},
+            )
+            self.assertEqual(still["body"].get("outcome"), "unknown")
             other = _identity("browser-guard", "browser-2", "33" * 32)
             hidden = dispatch(
                 state,
@@ -202,6 +232,60 @@ class HandlerTests(unittest.TestCase):
                 {"operation_id": "op-positive"},
             )
             self.assertEqual(hidden["code"], "denied_payload")
+
+    def test_missing_secret_does_not_consume(self) -> None:
+        """A seal that cannot be built leaves the grant issued."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            keeper_sk = generate_private()
+            browser_sk = generate_private()
+            browser_pk = public_key(browser_sk).hex()
+            state = _keeper(root, browser_key=browser_pk, keeper_private=keeper_sk)
+            issued = dispatch(
+                state,
+                _auth(_identity("omi-runner", "omi-1")),
+                "PrepareUse",
+                _prepare_body(),
+            )
+            self.assertTrue(issued["ok"], issued)
+            grant_ref = str(issued["body"]["grant_ref"])
+            challenge = bytes(range(32))
+            guard_public = public_key(browser_sk)
+            transcript = proof_transcript(
+                grant_ref=grant_ref,
+                origin="https://lab.invalid/signin",
+                operation_id="op-positive",
+                frame_id="frame-1",
+                navigation_generation="nav-1",
+                challenge=challenge,
+                guard_public=guard_public,
+                field="password",
+                tenant="tenant-lab-1",
+            )
+            proof = guard_proof(browser_sk, public_key(keeper_sk), transcript)
+            body = {
+                "grant_ref": grant_ref,
+                "origin": "https://lab.invalid/signin",
+                "operation_id": "op-positive",
+                "frame_id": "frame-1",
+                "navigation_generation": "nav-1",
+                "guard_public": browser_pk,
+                "proof": proof.hex(),
+                "challenge": challenge.hex(),
+                "field": "password",
+                "tenant": "tenant-lab-1",
+            }
+            broker = _auth(_identity("credential-broker", "broker-1", BROKER_KEY))
+            refused = dispatch(state, broker, "ResolveUseGrant", body)
+            self.assertEqual(refused["code"], "denied_payload")
+            assert state.grants is not None
+            self.assertEqual(state.grants.get(grant_ref)["disposition"], "issued")
+            secret = root / "authority" / "fill-secret"
+            secret.write_text("cah-synthetic-fill-v1\n", encoding="utf-8")
+            opened = dispatch(state, broker, "ResolveUseGrant", body)
+            self.assertTrue(opened["ok"], opened)
+            self.assertIn("sealed", opened["body"])
+            self.assertEqual(state.grants.get(grant_ref)["disposition"], "consumed")
 
     def test_duplicate_instance_does_not_consume_the_new_token(self) -> None:
         """A second launcher admit for an existing instance leaves the new token unused."""
@@ -216,7 +300,8 @@ class HandlerTests(unittest.TestCase):
                     trust_domain="lab.cah", tenant="tenant-lab-1", workloads=[]
                 ),
             )
-            grants = GrantStore(authority / "grants.json")
+            journal_path, epoch_path = host_fence_paths(authority)
+            grants = GrantStore(authority / "grants.json", journal_path, epoch_path)
             first = _admit(registry, authority, "token-1", "platform-launcher")
             self.assertTrue(first["ok"], first)
             second = _admit(registry, authority, "token-2", "platform-launcher")
@@ -228,7 +313,12 @@ class HandlerTests(unittest.TestCase):
             self.assertFalse((authority / "policy").exists())
 
 
-def _keeper(root: Path) -> ServerState:
+def _keeper(
+    root: Path,
+    browser_key: str = BROWSER_KEY,
+    broker_key: str = BROKER_KEY,
+    keeper_private: bytes = bytes(32),
+) -> ServerState:
     authority = root / "authority"
     authority.mkdir()
     registry = root / "admission.json"
@@ -247,7 +337,7 @@ def _keeper(root: Path) -> ServerState:
                     "cert_fingerprint": None,
                     "pid": 42,
                     "starttime": 7,
-                    "channel_public": BROWSER_KEY,
+                    "channel_public": browser_key,
                 },
                 {
                     "role": "credential-broker",
@@ -258,7 +348,7 @@ def _keeper(root: Path) -> ServerState:
                     "cert_fingerprint": None,
                     "pid": 43,
                     "starttime": 8,
-                    "channel_public": BROKER_KEY,
+                    "channel_public": broker_key,
                 },
             ],
         ),
@@ -280,7 +370,7 @@ def _keeper(root: Path) -> ServerState:
         resource_handle=None,
         expect_server=None,
         authority=authority,
-        channel_private=bytes(32),
+        channel_private=keeper_private,
         _lock=threading.Lock(),
     )
 

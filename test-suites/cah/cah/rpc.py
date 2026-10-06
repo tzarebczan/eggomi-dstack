@@ -120,8 +120,7 @@ def serve(
     """
     listen_sock, bound = _bind(address)
     ready = stop_file.parent / "ready" / role
-    ready.parent.mkdir(parents=True, exist_ok=True)
-    ready.write_text(bound + "\n", encoding="utf-8")
+    _write_ready(ready, bound)
     print(f"[cah] {role} listening on {bound}", flush=True)
     listen_sock.settimeout(0.2)
     while not stop_file.exists():
@@ -333,6 +332,15 @@ def _pin_complete(pin: Optional[Dict[str, str]]) -> bool:
         isinstance(pin.get(key), str) and bool(pin[key])
         for key in ("domain", "tenant", "role", "instance", "fingerprint")
     )
+
+
+def _write_ready(ready: Path, bound: str) -> None:
+    """Publish a non-empty ready file in one replace."""
+    ready.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ready.with_name(ready.name + ".tmp")
+    tmp.write_text(bound + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, ready)
 
 
 def chmod_private(path: Path) -> None:

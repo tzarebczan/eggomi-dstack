@@ -39,6 +39,10 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(
             graph.permitted("browser-guard", "keeper-core", "QueryOutcome")
         )
+        self.assertTrue(graph.permitted("omi-runner", "keeper-core", "QueryOutcome"))
+        self.assertFalse(
+            graph.permitted("credential-broker", "keeper-core", "QueryOutcome")
+        )
         self.assertFalse(graph.permitted("omi-runner", "keeper-core", "AdmitWorkload"))
         self.assertFalse(graph.permitted("connector", "keeper-core", "Health"))
         self.assertIsNone(graph.bootstrap)

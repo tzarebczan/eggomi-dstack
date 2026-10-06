@@ -60,17 +60,17 @@
       "mode": "0600",
       "when": "every fill run",
       "readers": "Keeper only. Confined processes hide state/authority. The broker does not receive the plaintext.",
-      "notes": "Lab canary cah-synthetic-fill-v1. Keeper seals it to the guard lease key. The canary scan ignores this file. The only result files that may contain the opened value are results/positive_fill.json and results/copied_owner_fill.json."
+      "notes": "Lab canary cah-synthetic-fill-v1. Keeper seals it to the guard channel key under the keeper static key. The canary scan ignores this file. The only result files that may contain the opened value are results/positive_fill.json and results/copied_owner_fill.json."
     },
     {
       "id": "grant_store",
       "path": "state/authority/grants.json",
-      "journal_path": "state/authority/authority-journal.jsonl",
-      "epoch_path": "state/authority/keeper-epoch",
+      "journal_path": "state/host-fence/authority-journal.jsonl",
+      "epoch_path": "state/host-fence/keeper-epoch",
       "mode": "0600",
       "when": "every fill run",
-      "readers": "Keeper. Confined processes hide state/authority.",
-      "notes": "Consumption and boot revocation are appended to the journal. Restoring an older grants.json does not revive a journaled grant."
+      "readers": "Keeper. Confined processes hide state/authority and state/host-fence.",
+      "notes": "Consumption and boot revocation are appended to the host fence, outside authority/. Restoring authority/ does not revive a journaled grant. The guard fence at state/fence/<instance> is hidden from other compartments."
     },
     {
       "id": "registry",

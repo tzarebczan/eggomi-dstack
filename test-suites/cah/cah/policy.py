@@ -48,8 +48,11 @@ def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
     """Publish one keeper revision and point ``current`` at it.
 
     Repeating the same revision bytes is a no-op. A different document for
-    an existing revision id is refused. The caller is the keeper writer,
-    not a launcher copy of a fixture into the authority path.
+    an existing revision id is refused. ``current`` moves only to a revision
+    that this call creates. Pointing it back at an older revision is refused.
+    The caller is the keeper writer. In the lab demo the launcher is that
+    test double and publishes through this function. It does not copy a
+    fixture to ``authority/keeper-policy.json``.
     """
     _validate(document)
     revision = str(document["policy_revision"])
@@ -58,11 +61,16 @@ def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
     directory.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(document, indent=2, sort_keys=True) + "\n"
     target = directory / f"{revision}.json"
+    current_path = directory / "current"
+    current = current_path.read_text(encoding="utf-8").strip() if current_path.exists() else ""
     if target.exists() and target.read_text(encoding="utf-8") != payload:
         raise ValueError("keeper policy revision is immutable")
-    if not target.exists():
-        _atomic(target, payload)
-    _atomic(directory / "current", revision + "\n")
+    if target.exists():
+        if current == revision:
+            return revision
+        raise ValueError("keeper policy current pointer does not move backward")
+    _atomic(target, payload)
+    _atomic(current_path, revision + "\n")
     return revision
 
 

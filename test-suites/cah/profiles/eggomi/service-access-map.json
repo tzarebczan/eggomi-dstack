@@ -51,13 +51,22 @@
       "deviation": "WS1 returns the outcome on keeper-authority to browser-guard ExecuteBrowserOperation. ReportOutcome is a stub edge, and it is accepted only for the consumed grant's recipient. unknown is a recorded outcome."
     },
     {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "QueryOutcome",
+      "ws1_caller": null,
+      "ws1_callee": null,
+      "ws1_method": null,
+      "deviation": "QueryOutcome lets the requester read unknown when a consumed grant has no report yet, and the first terminal report after that. WS1 has no separate query method."
+    },
+    {
       "caller_role": "browser-guard",
       "callee": "keeper-core",
       "method": "QueryOutcome",
       "ws1_caller": null,
       "ws1_callee": null,
       "ws1_method": null,
-      "deviation": "QueryOutcome lets the recipient read a recorded fill outcome, including unknown after a lost answer. WS1 has no separate query method."
+      "deviation": "QueryOutcome lets the recipient read a recorded fill outcome, including unknown when no report has been stored. The first terminal report per grant_ref is final. WS1 has no separate query method."
     }
   ]
 }
