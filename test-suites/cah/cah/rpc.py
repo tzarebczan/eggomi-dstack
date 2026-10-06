@@ -241,9 +241,7 @@ def _mtls_with_pidfd(
     return auth
 
 
-def _exchange_plain(
-    conn: socket.socket, auth: AuthContext, handler: Handler
-) -> None:
+def _exchange_plain(conn: socket.socket, auth: AuthContext, handler: Handler) -> None:
     request = read_frame(conn)
     method = request.get("method")
     body = request.get("body")
@@ -389,7 +387,9 @@ def _unix_peer(
         if pinned_role and role and pinned_role != role:
             raise RuntimeError("unix client peer role disagrees with the callee pin")
         if pinned_instance and instance and pinned_instance != instance:
-            raise RuntimeError("unix client peer instance disagrees with the callee pin")
+            raise RuntimeError(
+                "unix client peer instance disagrees with the callee pin"
+            )
         role = role or pinned_role
         instance = instance or pinned_instance
     if not role or not instance:

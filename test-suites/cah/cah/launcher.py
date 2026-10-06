@@ -1,9 +1,9 @@
-"""Launcher attribution for ``admission-registry/v1`` rows.
+r"""Launcher attribution for ``admission-registry/v1`` rows.
 
 Each row carries ``launcher_sig``: Ed25519 (RFC 8032, pure) by the launcher's
 host key, stored as 128 lowercase hex characters. A row without a valid one
 is no identity. The signed bytes are the UTF-8 encoding of
-``"eggomi/admission-row/v1\\n"`` followed by a compact JSON array, in
+``"eggomi/admission-row/v1\n"`` followed by a compact JSON array, in
 ``JSON.stringify`` encoding, of ``trust_domain`` and ``tenant`` (from the
 document), then ``role``, ``instance_id``, ``boot_id``, ``boot_generation``,
 ``boot_history``, ``channel_public``, ``cert_fingerprint``, ``pid`` and
@@ -34,9 +34,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from contextlib import contextmanager
 import re
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 
@@ -92,12 +92,12 @@ def launcher_dir(registry_path: Path) -> Path:
 
 
 def js_json(value: Any) -> str:
-    """Encode ``value`` the way ``JSON.stringify`` does, without whitespace.
+    r"""Encode ``value`` the way ``JSON.stringify`` does, without whitespace.
 
     Only strings, safe integers, ``None`` and lists occur in a row message.
     ``json.dumps`` with ``ensure_ascii=False`` matches ``JSON.stringify`` for
     every string except a lone surrogate, which ``JSON.stringify`` writes as
-    a lowercase ``\\uXXXX`` escape.
+    a lowercase ``\uXXXX`` escape.
     """
     _check_encodable(value)
     text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))

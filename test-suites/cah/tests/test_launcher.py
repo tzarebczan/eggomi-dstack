@@ -54,7 +54,9 @@ def _row(instance: str = "browser-1", channel: str = "ab" * 32) -> Dict[str, Any
 
 
 def _save(path: Path, rows: List[Dict[str, Any]]) -> None:
-    save_registry(path, AdmissionRegistry(trust_domain=TD, tenant=TENANT, workloads=rows))
+    save_registry(
+        path, AdmissionRegistry(trust_domain=TD, tenant=TENANT, workloads=rows)
+    )
 
 
 def _rewrite(path: Path, mutate: Any) -> None:
@@ -86,7 +88,7 @@ class RowMessageTests(unittest.TestCase):
         The expected text is what ``JSON.stringify`` returns for the same
         array under Node 26.
         """
-        value = ["\x00\x08\t\n\x0b\x0c\r\x1f\x7f \ud800x\"\\/é😀"]
+        value = ['\x00\x08\t\n\x0b\x0c\r\x1f\x7f \ud800x"\\/é😀']
         self.assertEqual(
             js_json(value),
             '["\\u0000\\b\\t\\n\\u000b\\f\\r\\u001f\x7f \\ud800x\\"\\\\/é😀"]',

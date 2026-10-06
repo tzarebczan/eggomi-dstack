@@ -31,7 +31,7 @@ class KkVectorTests(unittest.TestCase):
     """The handshake, the handshake hash and every transport message."""
 
     def test_official_vectors(self) -> None:
-        """cacophony and snow, as Eggomi's packages/noise runs them."""
+        """The cacophony and snow vectors, as Eggomi's packages/noise runs them."""
         upstream = json.loads(VECTORS.read_text(encoding="utf-8"))["upstream"]
         self.assertEqual(len(upstream), 2)
         for vector in upstream:

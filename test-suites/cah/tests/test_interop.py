@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cah.channel import (
+    PROLOGUE,
     ChannelClosed,
     ChannelError,
-    PROLOGUE,
     client_handshake,
     read_frame,
     server_handshake,
@@ -114,10 +114,12 @@ class InteropVectorTests(unittest.TestCase):
         response = session.read()
         thread.join(timeout=5)
         self.assertEqual(
-            bytes(client_tap.sent).hex(), expect["message1_frame"] + expect["request_frame"]
+            bytes(client_tap.sent).hex(),
+            expect["message1_frame"] + expect["request_frame"],
         )
         self.assertEqual(
-            bytes(server_tap.sent).hex(), expect["message2_frame"] + expect["response_frame"]
+            bytes(server_tap.sent).hex(),
+            expect["message2_frame"] + expect["response_frame"],
         )
         self.assertEqual(session.handshake_hash.hex(), expect["handshake_hash"])
         self.assertEqual(holder["hash"].hex(), expect["handshake_hash"])
@@ -135,7 +137,7 @@ class InteropVectorTests(unittest.TestCase):
         self.assertEqual(bytes(tap.sent).hex(), expect["refusal_frame"])
 
     def test_row_messages_and_signatures(self) -> None:
-        """rowMessage bytes and the Ed25519 signature are identical."""
+        """The rowMessage bytes and the Ed25519 signature are identical."""
         vectors = _vectors()
         fixed = vectors["fixed"]
         rows = vectors["rows"]
@@ -151,11 +153,15 @@ class InteropVectorTests(unittest.TestCase):
                 row["launcher_sig"] = case["launcher_sig"]
                 self.assertTrue(
                     row_attributed(
-                        fixed["trust_domain"], fixed["tenant"], row, keys=[signer.public]
+                        fixed["trust_domain"],
+                        fixed["tenant"],
+                        row,
+                        keys=[signer.public],
                     )
                 )
         self.assertEqual(
-            rows["eggomi_accepts"], [case["row"]["instance_id"] for case in rows["cases"]]
+            rows["eggomi_accepts"],
+            [case["row"]["instance_id"] for case in rows["cases"]],
         )
         self.assertEqual(rows["eggomi_refuses"], [])
 
@@ -253,7 +259,7 @@ class LiveEggomiTests(unittest.TestCase):
         self.assertEqual(fresh, committed)
 
     def test_eggomi_reads_a_stack_written_registry(self) -> None:
-        """readRegistry accepts signed rows and refuses unsigned or edited ones."""
+        """Eggomi's readRegistry accepts signed rows, refuses unsigned or edited."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "admission.json"
             save_registry(
@@ -379,7 +385,9 @@ class LiveEggomiTests(unittest.TestCase):
                     timeout=60,
                     check=True,
                 )
-                self.assertEqual(json.loads(stranger.stdout), {"denial": "denied_unadmitted"})
+                self.assertEqual(
+                    json.loads(stranger.stdout), {"denial": "denied_unadmitted"}
+                )
             finally:
                 stop.write_text("stop\n", encoding="utf-8")
                 thread.join(timeout=5)
@@ -391,7 +399,13 @@ class LiveEggomiTests(unittest.TestCase):
             workload = os.urandom(32)
             keeper = os.urandom(32)
             proc = subprocess.Popen(
-                _node("server", sock_path, keeper.hex(), public_from_private(workload).hex(), "2"),
+                _node(
+                    "server",
+                    sock_path,
+                    keeper.hex(),
+                    public_from_private(workload).hex(),
+                    "2",
+                ),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 text=True,

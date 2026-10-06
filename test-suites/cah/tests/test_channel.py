@@ -273,7 +273,13 @@ class ServedChannelTests(unittest.TestCase):
         stop = self.root / "stop"
         thread = threading.Thread(
             target=serve,
-            args=("unix:" + str(self.root / "rpc.sock"), "unix", self.registry, handler, stop),
+            args=(
+                "unix:" + str(self.root / "rpc.sock"),
+                "unix",
+                self.registry,
+                handler,
+                stop,
+            ),
             kwargs={"role": "keeper-core", "channel_private": self.server_key},
             daemon=True,
         )
@@ -385,7 +391,9 @@ class PidfdTests(unittest.TestCase):
             path = Path(tmp) / "admission.json"
             save_registry(
                 path,
-                AdmissionRegistry(trust_domain="lab.cah", tenant="tenant-lab-1", workloads=[]),
+                AdmissionRegistry(
+                    trust_domain="lab.cah", tenant="tenant-lab-1", workloads=[]
+                ),
             )
             auth = authenticate_unix(Fake(), path)  # type: ignore[arg-type]
         self.assertFalse(auth.admitted)
@@ -453,7 +461,9 @@ class PidfdTests(unittest.TestCase):
             root = Path(tmp)
             calls: list[str] = []
 
-            def handler(auth: object, method: str, body: dict[str, object]) -> dict[str, object]:
+            def handler(
+                auth: object, method: str, body: dict[str, object]
+            ) -> dict[str, object]:
                 del auth, body
                 calls.append(method)
                 return rpc_ok({})
@@ -496,7 +506,13 @@ class PidfdTests(unittest.TestCase):
             stop = root / "stop"
             thread = threading.Thread(
                 target=serve,
-                args=("unix:" + str(root / "rpc.sock"), "unix", registry, handler, stop),
+                args=(
+                    "unix:" + str(root / "rpc.sock"),
+                    "unix",
+                    registry,
+                    handler,
+                    stop,
+                ),
                 kwargs={"role": "keeper-core", "channel_private": server_key},
                 daemon=True,
             )

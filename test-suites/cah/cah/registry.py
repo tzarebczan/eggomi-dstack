@@ -165,7 +165,9 @@ class AdmissionRegistry:
                 if isinstance(starttime, int) and not isinstance(starttime, bool)
                 else None
             ),
-            channel_public=str(channel) if isinstance(channel, str) and channel else None,
+            channel_public=str(channel)
+            if isinstance(channel, str) and channel
+            else None,
         )
 
 
@@ -284,7 +286,9 @@ def rebind_channel(path: Path, instance_id: str, channel_public: str) -> BindRes
                 row["boot_generation"] = _generation(row.get("boot_generation")) + 1
             row["channel_public"] = channel_public
             kind = "bound" if fresh else "rebound"
-            return BindResult(kind, instance_id, _generation(row.get("boot_generation")))
+            return BindResult(
+                kind, instance_id, _generation(row.get("boot_generation"))
+            )
         raise ValueError(f"instance {instance_id} is not admitted")
 
     return _mutate(path, mutate)
@@ -405,7 +409,8 @@ def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
             and isinstance(new_channel, str)
             and new_channel
             and old_channel != new_channel
-            and _generation(row.get("boot_generation")) <= _generation(old.get("boot_generation"))
+            and _generation(row.get("boot_generation"))
+            <= _generation(old.get("boot_generation"))
         ):
             row["boot_generation"] = _generation(old.get("boot_generation")) + 1
 
