@@ -1,4 +1,10 @@
-"""RPC client and the authenticated server loop."""
+"""RPC client and the authenticated server loop.
+
+Inside the process, a response is ``{"ok", "code", "body"}``. On the Unix
+compartment channel it travels as keeper.sock JSON: ``{"id", "result"}`` for
+``ok`` and ``{"id", "error": {"code", "message"}}`` for a refusal. Lab mTLS
+keeps the ``{"method", "body"}`` frame.
+"""
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
 #
@@ -15,15 +21,17 @@ from typing import Any, Callable, Dict, Optional
 
 from .auth import AuthContext, authenticate_mtls, authenticate_unix, peer_spiffe
 from .channel import (
+    ChannelClosed,
     ChannelError,
     GateDenial,
+    Session,
     client_handshake,
     server_handshake,
     write_gate_denial,
 )
 from .forward import connect, parse_address
 from .frame import FrameError, read_frame, write_frame
-from .registry import load_registry
+from .registry import WorkloadIdentity, load_registry
 
 Handler = Callable[[AuthContext, str, Dict[str, Any]], Dict[str, Any]]
 
@@ -36,6 +44,33 @@ def rpc_ok(body: Dict[str, Any]) -> Dict[str, Any]:
 def rpc_error(code: str) -> Dict[str, Any]:
     """Build a refusal. The body stays empty so secrets cannot leak."""
     return {"ok": False, "code": code, "body": {}}
+
+
+class ChannelClient:
+    """The workload's side of one channel: calls in order, ids from 1."""
+
+    def __init__(self, session: Session) -> None:
+        """Wrap an established ``session``."""
+        self.session = session
+        self._next_id = 1
+
+    def call(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Send one request and return ``rpc_ok`` or ``rpc_error``.
+
+        A reply for another id, or one that is neither a result object nor
+        an error with a string code, raises ``ChannelError``.
+        """
+        request_id = self._next_id
+        self._next_id += 1
+        self.session.write({"id": request_id, "method": method, "params": params})
+        return _from_wire(request_id, self.session.read())
+
+
+def open_channel(
+    sock: socket.socket, client_private: bytes, server_public: bytes
+) -> ChannelClient:
+    """Run the KK handshake on ``sock``. A gate refusal raises ``GateDenial``."""
+    return ChannelClient(client_handshake(sock, client_private, server_public))
 
 
 def call_rpc(
@@ -90,15 +125,14 @@ def call_rpc(
         else:
             assert registry_path is not None and channel_private is not None
             try:
-                session = client_handshake(
+                channel = open_channel(
                     sock,
                     channel_private,
                     _peer_public(registry_path, unix_role, unix_instance),
                 )
             except GateDenial as exc:
                 return rpc_error(exc.code)
-            session.write({"method": method, "body": body})
-            response = session.read()
+            response = channel.call(method, body)
     except ChannelError as exc:
         raise RuntimeError("keyed channel failed") from exc
     finally:
@@ -226,7 +260,13 @@ def _exchange_unix(
     handler: Handler,
     channel_private: Optional[bytes],
 ) -> None:
-    """Gate on the pidfd, then speak only over the keyed channel."""
+    """Gate on the pidfd, then serve calls only over the keyed channel.
+
+    Before each call the registry row is read again. A row that is gone is
+    ``denied_unadmitted`` and one that changed is ``denied_boot``. That
+    refusal is the last frame before FIN. A frame that does not decrypt, or
+    a malformed request, closes the connection without a reply.
+    """
     auth = authenticate_unix(conn, registry_path)
     if (
         channel_private is None
@@ -235,19 +275,93 @@ def _exchange_unix(
         or not auth.identity.channel_public
     ):
         write_gate_denial(conn, auth.denial_code or "denied_unadmitted")
-        _drain(conn)
+        _finish(conn)
         return
+    identity = auth.identity
     session = server_handshake(
-        conn, channel_private, bytes.fromhex(auth.identity.channel_public)
+        conn, channel_private, bytes.fromhex(identity.channel_public or "")
     )
-    request = session.read()
+    while True:
+        try:
+            request = session.read()
+        except ChannelClosed:
+            return
+        parsed = _parse_request(request)
+        if parsed is None:
+            print("[cah] request malformed", flush=True)
+            return
+        request_id, method, params = parsed
+        stale = _recheck(registry_path, identity)
+        if stale is not None:
+            session.write(_to_wire(request_id, rpc_error(stale)))
+            _finish(conn)
+            return
+        if not isinstance(params, dict):
+            response = rpc_error("denied_payload")
+        else:
+            response = handler(auth, method, params)
+        session.write(_to_wire(request_id, response))
+
+
+def _recheck(registry_path: Path, identity: WorkloadIdentity) -> Optional[str]:
+    """Return the refusal when the peer is no longer the admitted incarnation."""
+    if identity.pid is None:
+        return "denied_unadmitted"
+    now = load_registry(registry_path).find_pid(identity.pid)
+    if now is None:
+        return "denied_unadmitted"
+    if now != identity:
+        return "denied_boot"
+    return None
+
+
+def _parse_request(request: Dict[str, Any]) -> Optional[tuple[int, str, Any]]:
+    """Return ``(id, method, params)``, or None when the request is malformed."""
+    request_id = request.get("id")
     method = request.get("method")
-    body = request.get("body")
-    if not isinstance(method, str) or not isinstance(body, dict):
-        response = rpc_error("denied_payload")
-    else:
-        response = handler(auth, method, body)
-    session.write(response)
+    if (
+        not isinstance(request_id, int)
+        or isinstance(request_id, bool)
+        or abs(request_id) > 2**53 - 1
+        or not isinstance(method, str)
+        or len(method) > 128
+    ):
+        return None
+    return request_id, method, request.get("params", {})
+
+
+def _to_wire(request_id: int, response: Dict[str, Any]) -> Dict[str, Any]:
+    """Map an internal response onto keeper.sock JSON."""
+    if response.get("ok") is True and response.get("code") == "ok":
+        body = response.get("body")
+        return {"id": request_id, "result": body if isinstance(body, dict) else {}}
+    code = str(response.get("code") or "error")
+    return {"id": request_id, "error": {"code": code, "message": code}}
+
+
+def _from_wire(request_id: int, reply: Dict[str, Any]) -> Dict[str, Any]:
+    """Map keeper.sock JSON back onto an internal response."""
+    if reply.get("id") != request_id:
+        raise ChannelError("reply is for another request")
+    error = reply.get("error")
+    if error is not None:
+        code = error.get("code") if isinstance(error, dict) else None
+        if not isinstance(code, str) or not code:
+            raise ChannelError("error reply has no code")
+        return rpc_error(code)
+    result = reply.get("result")
+    if not isinstance(result, dict):
+        raise ChannelError("reply result is not an object")
+    return rpc_ok(result)
+
+
+def _finish(sock: socket.socket) -> None:
+    """Send FIN after the last frame, then drop what the peer still sends."""
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        return
+    _drain(sock)
 
 
 def _drain(sock: socket.socket) -> None:

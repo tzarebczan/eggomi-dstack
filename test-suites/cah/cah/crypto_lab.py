@@ -1,8 +1,9 @@
 """Lab X25519, HKDF, and HMAC-based AEAD.
 
-The constructions here are the harness channel and the sealed answer.
-They are not a production cipher suite. The static key stays inside the
-compartment: that secrecy is the identity boundary.
+The constructions here are the sealed answer and the guard's lease-key wrap.
+They are not a production cipher suite. The compartment channel is Noise KK
+(``noise.py``, ``channel.py``). The static key stays inside the compartment:
+that secrecy is the identity boundary.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>

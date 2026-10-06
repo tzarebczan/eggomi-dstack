@@ -1,9 +1,28 @@
-"""Keyed compartment channel for Unix RPC.
+"""The compartment channel: Noise KK keyed to the registered static key.
 
-pid and start time only decide whether this handshake may start. After it
-succeeds, every frame is AEAD under keys derived from the workload's
-registered static key. A process that holds the connected fd but not that
-key cannot complete the handshake or produce a later frame.
+``Noise_KK_25519_ChaChaPoly_SHA256`` with the prologue
+``eggomi/cah-channel/v1``. This is the wire Eggomi's keeper speaks
+(``apps/desktop/src/keeper/cah/channel.ts``). The workload is the initiator
+and knows the keeper's static key. The keeper knows the workload's from its
+launcher-signed registry row.
+
+pid and start time only decide whether this handshake may start. A process
+that holds the connected fd but not the registered key cannot finish
+message 1, and on an established channel it cannot write a frame that
+authenticates: each is ChaChaPoly under the next counter, so an injected,
+replayed or reordered frame fails and the connection closes.
+
+On the socket every frame is a u16 big-endian length, then that many bytes
+(1..65 535):
+
+    workload -> keeper   0x01 || KK message 1 (e, es, ss; empty payload)
+    keeper -> workload   0x01 || KK message 2 (e, ee, se; empty payload)
+                         or 0x00 || an ASCII refusal code, then close
+    then, both ways      one Noise transport message per frame (empty
+                         associated data, implicit counter nonce) carrying
+                         keeper.sock JSON:
+      request  {"id": n, "method": "...", "params": {...}}
+      response {"id": n, "result": ...} | {"id": n, "error": {"code", "message"}}
 
 A plain fork copies the key and is the same compartment. The key must stay
 out of templates, out of files another compartment can read, and off the
@@ -16,75 +35,97 @@ command line.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import socket
 import struct
-from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from .crypto_lab import aead_open, aead_seal, generate_private, hkdf_sha256, public_key, x25519
+from .noise import (
+    MAX_MESSAGE,
+    TAGLEN,
+    KkInitiator,
+    KkResponder,
+    NoiseError,
+    Transport,
+)
 
-_CLIENT_MAGIC = b"CH1\x01"
-_SERVER_MAGIC = b"CH2\x01"
-_GATE_MAGIC = b"CH0\x01"
-_HEADER = struct.Struct("!I")
-_MAX = 1024 * 1024
+PROLOGUE = b"eggomi/cah-channel/v1"
+HELLO = 0x01
+REFUSAL = 0x00
+MAX_PAYLOAD = MAX_MESSAGE - TAGLEN
+_HEADER = struct.Struct("!H")
+_EMPTY = b""
 
 
 class ChannelError(ValueError):
-    """The handshake or a frame tag failed."""
+    """The handshake failed, a frame did not authenticate, or the peer closed."""
+
+
+class ChannelClosed(ChannelError):
+    """The peer closed the connection on a frame boundary."""
 
 
 class GateDenial(Exception):
-    """The server refused the connection before the keyed channel existed."""
+    """The keeper refused the connection before the keyed channel existed."""
 
     def __init__(self, code: str) -> None:
-        """Record the gate ``code``."""
+        """Record the refusal ``code``."""
         super().__init__(code)
         self.code = code
 
 
-@dataclass
-class Session:
-    """One direction pair of AEAD keys and a strictly increasing counter."""
+def encode_frame(body: bytes) -> bytes:
+    """Return ``body`` behind its u16 big-endian length."""
+    if not 1 <= len(body) <= MAX_MESSAGE:
+        raise ChannelError("frame length is outside 1..65535")
+    return _HEADER.pack(len(body)) + body
 
-    sock: socket.socket
-    send_key: bytes
-    recv_key: bytes
-    send_counter: int = 0
-    recv_counter: int = 0
+
+def read_frame(sock: socket.socket) -> bytes:
+    """Read one frame. A zero length is a protocol error.
+
+    A close before the first header byte is ``ChannelClosed``. A close in
+    the middle of a frame is a ``ChannelError``.
+    """
+    first = sock.recv(1)
+    if not first:
+        raise ChannelClosed("connection closed")
+    header = first + _read_exact(sock, _HEADER.size - 1)
+    (length,) = _HEADER.unpack(header)
+    if length == 0:
+        raise ChannelError("frame length is zero")
+    return _read_exact(sock, length)
+
+
+class Session:
+    """An established channel: one transport message per frame."""
+
+    def __init__(self, sock: socket.socket, transport: Transport) -> None:
+        """Wrap ``sock`` with the handshake's two cipher states."""
+        self.sock = sock
+        self._send = transport.send
+        self._receive = transport.receive
+        self.handshake_hash = transport.handshake_hash
 
     def write(self, payload: Dict[str, Any]) -> None:
-        """Send one JSON object as an authenticated frame."""
-        raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        if len(raw) > _MAX:
-            raise ChannelError("frame exceeds 1 MiB")
-        nonce = self.send_counter.to_bytes(8, "big")
-        ciphertext, tag = aead_seal(self.send_key, nonce, b"cah-frame/v1", raw)
-        body = nonce + tag + ciphertext
-        self.sock.sendall(_HEADER.pack(len(body)) + body)
-        self.send_counter += 1
+        """Send one JSON object as one transport message."""
+        raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+        if len(raw) > MAX_PAYLOAD:
+            raise ChannelError("frame exceeds one Noise transport message")
+        self.sock.sendall(encode_frame(self._send.encrypt_with_ad(_EMPTY, raw)))
 
     def read(self) -> Dict[str, Any]:
-        """Read one authenticated JSON object. A repeated counter is refused."""
-        header = _read_exact(self.sock, _HEADER.size)
-        (length,) = _HEADER.unpack(header)
-        if length <= 40 or length > _MAX + 40:
-            raise ChannelError("frame length is outside the channel limit")
-        body = _read_exact(self.sock, length)
-        nonce = body[:8]
-        tag = body[8:40]
-        ciphertext = body[40:]
-        expect = self.recv_counter.to_bytes(8, "big")
-        if nonce != expect:
-            raise ChannelError("frame counter is not the next value")
+        """Read one JSON object. A frame that does not decrypt is an error.
+
+        The caller closes the connection on any ``ChannelError``.
+        """
+        body = read_frame(self.sock)
         try:
-            raw = aead_open(self.recv_key, nonce, b"cah-frame/v1", ciphertext, tag)
-        except ValueError as exc:
-            raise ChannelError("frame tag does not match") from exc
-        self.recv_counter += 1
+            raw = self._receive.decrypt_with_ad(_EMPTY, body)
+        except NoiseError as exc:
+            raise ChannelError("frame does not authenticate") from exc
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -95,101 +136,88 @@ class Session:
 
 
 def client_handshake(
-    sock: socket.socket, client_private: bytes, server_public: bytes
+    sock: socket.socket,
+    client_private: bytes,
+    server_public: bytes,
+    *,
+    ephemeral: Optional[bytes] = None,
 ) -> Session:
-    """Prove possession of ``client_private`` and return the session.
+    """Prove ``client_private`` to the keeper whose static key is ``server_public``.
 
-    A gate denial from the server is raised as ``GateDenial`` and is not a
-    successful RPC.
+    A pre-channel refusal is raised as ``GateDenial`` and is not an RPC
+    result. ``ephemeral`` is for vectors only.
     """
-    client_public = public_key(client_private)
-    ephemeral_private = generate_private()
-    ephemeral_public = public_key(ephemeral_private)
-    transcript = _transcript(ephemeral_public, server_public, client_public)
-    shared = x25519(ephemeral_private, server_public) + x25519(
-        client_private, server_public
+    initiator = KkInitiator(
+        prologue=PROLOGUE,
+        static_private=client_private,
+        remote_static=server_public,
+        ephemeral=ephemeral,
     )
-    tag = _mac(shared, b"cah-channel-c1/v1", transcript)
+    hello = encode_frame(bytes([HELLO]) + initiator.write_message1())
     try:
-        sock.sendall(_CLIENT_MAGIC + ephemeral_public + tag)
+        sock.sendall(hello)
     except BrokenPipeError:
-        reply = _read_exact(sock, 4)
-        if reply == _GATE_MAGIC:
-            raise GateDenial(_read_gate_code(sock))
-        raise ChannelError("connection closed during the client handshake") from None
-    reply = _read_exact(sock, 4)
-    if reply == _GATE_MAGIC:
-        raise GateDenial(_read_gate_code(sock))
-    if reply != _SERVER_MAGIC:
-        raise ChannelError("server handshake magic is not recognized")
-    server_ephemeral = _read_exact(sock, 32)
-    server_tag = _read_exact(sock, 32)
-    transcript2 = transcript + server_ephemeral
-    shared2 = shared + x25519(ephemeral_private, server_ephemeral) + x25519(
-        client_private, server_ephemeral
-    )
-    expect = _mac(shared2, b"cah-channel-s2/v1", transcript2)
-    if not hmac.compare_digest(expect, server_tag):
-        raise ChannelError("server handshake tag does not match")
-    send_key = hkdf_sha256(shared2, b"cah-channel-c2s/v1" + transcript2)
-    recv_key = hkdf_sha256(shared2, b"cah-channel-s2c/v1" + transcript2)
-    return Session(sock, send_key, recv_key)
+        pass
+    try:
+        body = read_frame(sock)
+    except ChannelClosed as exc:
+        raise ChannelError("connection closed during the client handshake") from exc
+    except ConnectionResetError as exc:
+        raise ChannelError("connection reset during the client handshake") from exc
+    if body[0] == REFUSAL:
+        raise GateDenial(_ascii(body[1:]))
+    if body[0] != HELLO:
+        raise ChannelError("handshake reply is not recognized")
+    try:
+        _payload, transport = initiator.read_message2(body[1:])
+    except NoiseError as exc:
+        raise ChannelError("server handshake does not authenticate") from exc
+    return Session(sock, transport)
 
 
 def server_handshake(
-    sock: socket.socket, server_private: bytes, client_public: bytes
+    sock: socket.socket,
+    server_private: bytes,
+    client_public: bytes,
+    *,
+    ephemeral: Optional[bytes] = None,
 ) -> Session:
-    """Accept a client that proves ``client_public``. Any other key is refused."""
-    header = _read_exact(sock, 4)
-    if header != _CLIENT_MAGIC:
-        raise ChannelError("client handshake magic is not recognized")
-    ephemeral_public = _read_exact(sock, 32)
-    tag = _read_exact(sock, 32)
-    server_public = public_key(server_private)
-    transcript = _transcript(ephemeral_public, server_public, client_public)
-    shared = x25519(server_private, ephemeral_public) + x25519(
-        server_private, client_public
+    """Accept only a peer that proves ``client_public``.
+
+    A failed handshake raises ``ChannelError`` and nothing is written; the
+    caller closes the connection.
+    """
+    body = read_frame(sock)
+    if body[0] != HELLO:
+        raise ChannelError("client handshake is not recognized")
+    responder = KkResponder(
+        prologue=PROLOGUE,
+        static_private=server_private,
+        remote_static=client_public,
+        ephemeral=ephemeral,
     )
-    expect = _mac(shared, b"cah-channel-c1/v1", transcript)
-    if not hmac.compare_digest(expect, tag):
-        raise ChannelError("client handshake tag does not match")
-    ephemeral_private = generate_private()
-    server_ephemeral = public_key(ephemeral_private)
-    transcript2 = transcript + server_ephemeral
-    shared2 = shared + x25519(ephemeral_private, ephemeral_public) + x25519(
-        ephemeral_private, client_public
-    )
-    server_tag = _mac(shared2, b"cah-channel-s2/v1", transcript2)
-    sock.sendall(_SERVER_MAGIC + server_ephemeral + server_tag)
-    recv_key = hkdf_sha256(shared2, b"cah-channel-c2s/v1" + transcript2)
-    send_key = hkdf_sha256(shared2, b"cah-channel-s2c/v1" + transcript2)
-    return Session(sock, send_key, recv_key)
+    try:
+        responder.read_message1(body[1:])
+        message, transport = responder.write_message2()
+    except NoiseError as exc:
+        raise ChannelError("client handshake does not authenticate") from exc
+    sock.sendall(encode_frame(bytes([HELLO]) + message))
+    return Session(sock, transport)
 
 
 def write_gate_denial(sock: socket.socket, code: str) -> None:
-    """Send a pre-channel refusal. It carries no method result."""
-    raw = code.encode("utf-8")
-    if len(raw) > 64:
-        raise ChannelError("gate denial code is too long")
-    sock.sendall(_GATE_MAGIC + bytes([len(raw)]) + raw)
+    """Send a pre-channel refusal: ``0x00`` and an ASCII code."""
+    raw = code.encode("ascii")
+    if not raw or len(raw) > 64:
+        raise ChannelError("gate denial code is empty or too long")
+    sock.sendall(encode_frame(bytes([REFUSAL]) + raw))
 
 
-def _read_gate_code(sock: socket.socket) -> str:
-    (length,) = _read_exact(sock, 1)
-    raw = _read_exact(sock, length)
+def _ascii(raw: bytes) -> str:
     try:
-        return raw.decode("utf-8")
+        return raw.decode("ascii")
     except UnicodeDecodeError as exc:
-        raise ChannelError("gate denial is not utf-8") from exc
-
-
-def _transcript(ephemeral: bytes, server_public: bytes, client_public: bytes) -> bytes:
-    return b"cah-channel/v1" + ephemeral + server_public + client_public
-
-
-def _mac(shared: bytes, label: bytes, transcript: bytes) -> bytes:
-    key = hkdf_sha256(shared, label)
-    return hmac.new(key, transcript, hashlib.sha256).digest()
+        raise ChannelError("gate denial is not ascii") from exc
 
 
 def _read_exact(sock: socket.socket, size: int) -> bytes:
@@ -197,7 +225,7 @@ def _read_exact(sock: socket.socket, size: int) -> bytes:
     while len(chunks) < size:
         part = sock.recv(size - len(chunks))
         if not part:
-            raise ChannelError("connection closed during the channel handshake")
+            raise ChannelError("connection closed inside a frame")
         chunks.extend(part)
     return bytes(chunks)
 
