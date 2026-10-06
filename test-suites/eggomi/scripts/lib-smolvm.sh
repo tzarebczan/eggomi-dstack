@@ -51,11 +51,20 @@ die() {
 # environment gate, not a pass.
 skip() {
   mkdir -p "$WORK_DIR"
+  rm -f "$REPORT"
   printf '# Eggomi %s was gated before any subVM ran.\neggomi_%s_available 0\n' \
     "$SUITE_TAG" "$SUITE_TAG" >"$METRICS"
   printf 'skip: %s\n' "$1" >&2
   printf 'metrics: %s\n' "$METRICS" >&2
   exit 77
+}
+
+# Called first by each suite: no report from an earlier run may survive into
+# this one, and the run directory is private (it holds keys while running).
+begin_run() {
+  mkdir -p "$RUN_DIR"
+  chmod 700 "$RUN_DIR"
+  rm -f "$METRICS" "$REPORT"
 }
 
 sv() {
@@ -101,8 +110,12 @@ cleanup() {
   for pid in "${BACKGROUND[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
-  # Throwaway keys, the test secret, and any held token never outlive a run.
+  # Throwaway keys, the test secret, any held token, and checkpoints (which
+  # hold the guard's key and session in RAM) never outlive a run.
   rm -rf "$RUN_DIR/keys" "$RUN_DIR/token"
+  if [[ "${EGGOMI_KEEP_CHECKPOINT:-0}" != 1 ]]; then
+    rm -f "$RUN_DIR"/*.checkpoint
+  fi
   if [[ "${EGGOMI_KEEP:-0}" == 1 ]]; then
     log "keeping machines: ${MACHINES[*]}"
     return

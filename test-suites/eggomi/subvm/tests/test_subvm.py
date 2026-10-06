@@ -98,6 +98,13 @@ class KeeperChannelTest(unittest.TestCase):
         self.assertEqual(out["accept"], "filled")
         self.assertEqual(out["redeem"], "expired")
 
+    def test_expired_is_terminal(self) -> None:
+        """An expired grant stays expired even if the wall clock steps back."""
+        out = self.guard.session(PURPOSE, 300, 0, True, 500)
+        self.assertEqual(out["redeem"], "expired")
+        self.keeper._now_ms = lambda: 0
+        self.assertEqual(self.guard.redeem_held()["code"], "expired")
+
     def test_deny_by_default(self) -> None:
         """Unknown methods, keys, purposes, and long TTLs are refused."""
         self.assertEqual(self.guard.raw("GetSecret", {}, False)["code"], "denied_method")
@@ -187,8 +194,92 @@ class ScannerTest(unittest.TestCase):
         path.write_bytes(payload + manifest + footer)
         self.assertTrue(host_tools.is_checkpoint(path))
         result = host_tools.scan(SECRET, [path])
+        found = result["files_with_hits"][str(path)]
+        self.assertEqual(found["kind"], "checkpoint")
+        self.assertEqual(found["decoded"]["raw"], 1)
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is not installed")
+    def test_checkpoint_frames_and_truncation(self) -> None:
+        """Every frame is decoded; a truncated frame raises instead of passing."""
+        first = subprocess.run(["zstd", "-q", "-c"], input=b"a" * 100,
+                               stdout=subprocess.PIPE, check=True).stdout
+        second = subprocess.run(["zstd", "-q", "-c"], input=b"\0" * 64 + SECRET,
+                                stdout=subprocess.PIPE, check=True).stdout
+        path = self._container(first + second)
+        found = host_tools.scan(SECRET, [path])["files_with_hits"][str(path)]
+        self.assertEqual(found["decoded"]["raw"], 1)
+        truncated = self._container((first + second)[:-6])
+        with self.assertRaises(ValueError):
+            host_tools.scan(SECRET, [truncated])
+
+    def test_missing_target_raises(self) -> None:
+        """A path that does not exist is an error, not a clean search."""
+        with self.assertRaises(FileNotFoundError):
+            host_tools.scan(SECRET, [self.tmp / "absent"])
+
+    def test_symlinked_file_is_scanned_once(self) -> None:
+        """A symlink to a file is followed; the target is counted once."""
+        real = self.tmp / "real.bin"
+        real.write_bytes(SECRET)
+        (self.tmp / "link.bin").symlink_to(real)
+        result = host_tools.scan(SECRET, [real, self.tmp / "link.bin"])
+        self.assertEqual(result["files_scanned"], 1)
         self.assertEqual(result["hits"]["raw"], 1)
-        self.assertEqual(result["files_with_hits"][str(path)]["kind"], "checkpoint")
+
+    @unittest.skipUnless(shutil.which("qemu-img") and shutil.which("qemu-io"),
+                         "qemu-img and qemu-io are not installed")
+    def test_qcow2_logical_view_and_backing_chain(self) -> None:
+        """A secret split across non-adjacent clusters, or in a backing file, is found."""
+        base = self.tmp / "base.qcow2"
+        top = self.tmp / "top.qcow2"
+        cluster = 65536
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", str(base), "4M"], check=True)
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", "base.qcow2",
+                        "-F", "qcow2", str(top)], check=True, cwd=self.tmp)
+        half = len(SECRET) // 2
+        head, tail = SECRET[:half], SECRET[half:]
+        (self.tmp / "head").write_bytes(head)
+        (self.tmp / "tail").write_bytes(tail)
+        (self.tmp / "other").write_bytes(b"backing:" + SECRET)
+        # Write the second half first so the two clusters are stored out of order.
+        for image, src, offset in (
+            (top, "tail", 3 * cluster),
+            (top, "head", 3 * cluster - half),
+            (base, "other", 1 << 20),
+        ):
+            source = self.tmp / src
+            subprocess.run(
+                ["qemu-io", "-f", "qcow2", "-c",
+                 f"write -s {source} {offset} {source.stat().st_size}", str(image)],
+                check=True, stdout=subprocess.DEVNULL)
+        image = host_tools.Qcow2(top)
+        try:
+            logical = b"".join(c for c in image.chunks() if c != b"\0")
+        finally:
+            image.close()
+        self.assertIn(SECRET, logical)
+        physical = top.read_bytes()
+        self.assertNotIn(SECRET, physical)
+        result = host_tools.scan(SECRET, [top])
+        logical_hits = result["files_with_hits"][str(top)]["logical"]["raw"]
+        self.assertEqual(logical_hits, 2)  # the split copy and the backing copy
+        packed = self.tmp / "packed.qcow2"
+        subprocess.run(["qemu-img", "convert", "-q", "-c", "-O", "qcow2", str(top),
+                        str(packed)], check=True)
+        self.assertNotIn(SECRET, packed.read_bytes())
+        packed_hits = host_tools.scan(SECRET, [packed])["files_with_hits"][str(packed)]
+        self.assertEqual(packed_hits["logical"]["raw"], 2)  # compressed clusters
+        self.assertEqual(result["kinds"], {"qcow2": 1})
+
+    def _container(self, payload: bytes) -> Path:
+        manifest = json.dumps({"checkpoint": {"version": 4}}).encode()
+        footer = struct.pack(
+            "<8sIQQQQQI", b"SMOLPACK", 1, 0, 0, len(payload), len(payload),
+            len(manifest), 0,
+        ).ljust(64, b"\0")
+        path = self.tmp / f"vm-{len(payload)}.checkpoint"
+        path.write_bytes(payload + manifest + footer)
+        return path
 
     def test_clean_tree(self) -> None:
         """Random data has no hits."""

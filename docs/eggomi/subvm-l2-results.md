@@ -97,67 +97,69 @@ checkpointable browsers therefore needs one of two things:
 
 These figures come from `./test-suites/eggomi/scripts/s3-smolvm.sh`, run on
 2026-10-06. The host was an AMD Ryzen 9 5950X with 125 GB RAM, Linux 7.2 on
-btrfs. smolvm was 1.23.7 built from mirror branch `claude/eggomi-subvm`; that
-build is the upstream 1.23.7 code plus G1 and G2 below. Two runs on the stock
-1.23.7 release binary gave the same picture, with timings within about
-±50%.
+btrfs. smolvm was 1.23.7 built from mirror branch `claude/eggomi-subvm`,
+which is upstream 1.23.7 plus G1 and G2 below. Earlier runs on the stock
+1.23.7 release binary showed the same picture; their timings were within a
+factor of two.
 
 Lifecycle, in seconds:
 
 | Operation | keeper | browser |
 | --- | --- | --- |
-| create (from pack) | 0.03 | 0.49 |
-| start (VM boot) | 0.44 | 0.43 |
-| ready (start to workload answering) | 1.45 | 3.65 |
-| exec, p50 of 9 | 0.030 | 0.061 |
-| checkpoint (total / source paused) | | 1.46 / 0.60 |
-| checkpoint size | | 168 MB |
-| stop | 0.15 | 0.22 |
-| restore: create from checkpoint | | 1.68 |
-| restore: start | | 0.75 |
-| restore: total to ready | | 2.45 |
-| branch the restored browser | | 0.46 (ready 0.49) |
+| create (from pack) | 0.03 | 0.09 |
+| start (VM boot) | 0.38 | 0.27 |
+| ready (start to workload answering) | 0.99 | 1.52 |
+| exec, p50 of 9 | 0.016 | 0.027 |
+| checkpoint (total / source paused) | | 1.23 / 0.51 |
+| checkpoint size | | 166 MB |
+| stop | 0.16 | 0.16 |
+| restore: create from checkpoint | | 2.17 |
+| restore: start | | 0.62 |
+| restore: total to ready | | 2.82 |
+| branch the restored browser | | 0.49 (ready 0.51) |
 
-`ready` runs from `machine start` until the workload answers. For keeper
-that is a KK `Ping` from the host. For browser it is the guard's ready file
-plus Chromium's `/json/version`. Both include copying the harness in.
+`ready` is measured from `machine start` until the workload answers. For
+keeper that means a KK `Ping` from the host. For browser it means the
+guard's ready file plus Chromium's `/json/version`. Both include copying the
+harness in.
 
 Memory, as host VMM RSS and guest used (MemTotal - MemAvailable):
 
 | Phase | browser host RSS | browser guest used |
 | --- | --- | --- |
-| idle (keeper idle: 132 MB host, 57 MB guest) | 478 MB | 255 MB |
-| after a 256 MiB tab | 812 MB | 264 MB |
-| 30 s later (free-page reporting) | 487 MB | 260 MB |
-| after `machine reclaim` (balloon pulse, 1.0 s) | 394 MB | 342 MB |
-| after a checkpoint | 570 MB | 333 MB |
-| after stop | 0 (570 MB returned) | |
-| restored and started `--branchable` | 132 MB | 329 MB |
-| branch child | 138 MB (71 MB shared) | 315 MB |
+| idle (keeper idle: 132 MB host, 58 MB guest) | 483 MB | 267 MB |
+| after a 256 MiB tab | 825 MB | 332 MB |
+| 30 s later (free-page reporting) | 478 MB | 260 MB |
+| after `machine reclaim` (balloon pulse, 1.0 s) | 404 MB | 326 MB |
+| after a checkpoint | 567 MB | 319 MB |
+| after stop | 0 (567 MB returned) | |
+| restored and started `--branchable` | 141 MB | 325 MB |
+| branch child | 132 MB | 313 MB |
 
-Keeper RPC availability: the probe sent a KK `Ping` every 100 ms while the
-browser was stopped, restored, and branched. It recorded 45 attempts with 0
-failures; the longest gap between successes was 0.17 s and p50 latency was
-31 ms.
+The keeper probe sent a KK `Ping` every 100 ms while the browser was
+stopped, restored, and branched. All 48 attempts succeeded. The longest gap
+between successes was 0.16 s, and p50 latency was 31 ms. S3 also checks that
+the probe process exited cleanly and that its log spans the whole interval.
 
 What the numbers say:
 
-- Free-page reporting alone returned 325 MB of the heavy tab within 30 s.
-  An on-demand balloon pulse returned another 93 MB of page cache. Stopping
-  returns everything, and restore puts a warm browser back in 2.5 s.
+- Free-page reporting alone returned 348 MB of the heavy tab within 30 s.
+  An on-demand balloon pulse then returned another 73 MB of page cache.
+  Stopping the browser returns all of its memory, and restore brings back a
+  warm browser in 2.8 s.
 - A checkpoint raises the source's host RSS and keeps it raised (gap G4):
-  +176 MB here. For a `--branchable` (memfd-backed) machine, a manual run
-  went from 435 MB to 1,099 MB. Neither free-page reporting nor a balloon
-  pulse brought that back, because a branch source is excluded from
-  reclaim. Run browsers non-branchable by default; restore one
-  `--branchable` only when it is to be branched.
-- Restored and branched machines map RAM lazily from the checkpoint. That is
-  why their RSS starts lower than a cold-booted browser's.
+  +163 MB in this run. A `--branchable` (memfd-backed) machine fares worse:
+  in a manual run it went from 435 MB to 1,099 MB, and neither free-page
+  reporting nor a balloon pulse brought it back, because branch sources are
+  excluded from reclaim. Run browsers non-branchable by default, and restore
+  one `--branchable` only when it is to be branched.
+- Restored and branched machines map their RAM lazily from the checkpoint,
+  so their RSS starts lower than a cold-booted browser's.
 
 ## S4 results
 
 `./test-suites/eggomi/scripts/s4-secret-rpc.sh` ran on the same host and
-build. It passed all 14 cases and every leak search:
+build. All 14 cases passed, and every leak search passed:
 
 | Case | Result |
 | --- | --- |
@@ -165,25 +167,36 @@ build. It passed all 14 cases and every leak search:
 | redeem the same token again | `consumed` |
 | open the same seal again | recorded outcome `filled`, `repeat`, no plaintext returned |
 | open after the TTL (1.0 s TTL, opened at 1.5 s) | `grant_expired` at the guard |
-| redeem after the TTL (1.5 s TTL, redeemed at 2.0 s) | `expired` at the origin stand-in |
+| redeem after the TTL (1.5 s TTL, redeemed at 2.0 s) | `expired` at the origin stand-in; the keeper times expiry on its monotonic clock, and `expired` is terminal |
 | `GetSecret`, `ListConnections` | `denied_method` |
 | unregistered channel key | `handshake_refused` (no KK reply) |
 | purpose outside the allowlist / 60 s TTL | `denied_purpose` / `denied_ttl` |
 | restored browser: keeper RPC | `ok` |
 | restored browser: redeem the carried session after its TTL | `expired` |
 
-The leak search looked for three encodings of the secret: raw, UTF-16LE,
-and hex. Checkpoint payloads were decompressed before searching, and disk
-images were searched sparse-aware.
+The leak search (`host_tools.py scan`) looks for the secret raw, as UTF-16LE,
+and as hex. It reads every file in three ways:
+
+- as stored, skipping only true holes;
+- each smolvm checkpoint also decoded, with every zstd frame required to
+  decode completely;
+- each qcow2 disk also through its logical view and backing chain, so
+  clusters that are adjacent on the guest's disk but stored far apart, as
+  well as compressed clusters, are searched as the guest sees them.
+
+A missing target, a read error, or an incomplete decode fails the search.
+None of them can count as a clean result. S4 also requires coverage: each
+checkpoint search must have read one checkpoint, and each disk search must
+have read the machine's qcow2 disks.
 
 | Target | Secret hits | Positive control |
 | --- | --- | --- |
 | browser checkpoint taken while the guard held a live session | 0 | that session's token: 12 hits |
 | browser disks (storage, overlay) after stop | 0 | |
 | restored browser's disks | 0 | |
-| keeper disks | | the secret: 1 hit (`storage.qcow2`) |
+| keeper disks | | the secret: 2 hits (`storage.qcow2`, stored and logical) |
 
-The positive controls are what make the zero counts meaningful. The scanner
+The positive controls are what give the zero counts meaning: the scanner
 does see guard memory inside a checkpoint, and it does find the secret on
 the disk that holds it.
 

@@ -82,6 +82,7 @@ class Keeper:
         self.grants: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
+        self._mono = time.monotonic
 
     def _advance_epoch(self) -> int:
         path = self.state / "boot-epoch"
@@ -157,6 +158,9 @@ class Keeper:
                 "purpose": purpose,
                 "role": role,
                 "expires_ms": expires_ms,
+                # Expiry is enforced on the keeper's monotonic clock, so a wall
+                # clock step cannot revive a grant. expires_ms is for reports.
+                "deadline": self._mono() + ttl_ms / 1000,
                 "state": "issued",
             }
             self._journal(
@@ -186,9 +190,9 @@ class Keeper:
             grant = self.grants.get(grant_ref)
             if grant is None or grant["role"] != role:
                 return _error("unknown_grant")
-            if grant["state"] == "consumed":
-                return _error("consumed")
-            if self._now_ms() > grant["expires_ms"]:
+            if grant["state"] in ("consumed", "expired"):
+                return _error(grant["state"])
+            if self._mono() > grant["deadline"]:
                 grant["state"] = "expired"
                 self._journal({"grant_ref": grant_ref, "state": "expired"})
                 return _error("expired")

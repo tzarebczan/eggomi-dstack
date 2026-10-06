@@ -54,7 +54,7 @@ scan_hits() {
 }
 
 main() {
-  mkdir -p "$RUN_DIR"
+  begin_run
   smolvm_gate
   if [[ "${1:-}" == --preflight ]]; then
     log "preflight passed (smolvm $SMOLVM_VERSION)"
@@ -148,11 +148,23 @@ main() {
   secret_restored=$(scan_hits "$secret" "$RUN_DIR/scan-restored-disk.json" "$(machine_dir "$R")")
   [[ "${EGGOMI_KEEP_CHECKPOINT:-0}" == 1 ]] || rm -f "$ckpt"
 
+  # Coverage: each search must have read what it claims to have read.
+  local coverage=true
+  jq -e '.kinds.checkpoint == 1' "$RUN_DIR/scan-browser-checkpoint.json" >/dev/null || coverage=false
+  jq -e '.kinds.checkpoint == 1' "$RUN_DIR/scan-token-checkpoint.json" >/dev/null || coverage=false
+  local scan_file
+  for scan_file in scan-browser-disk scan-restored-disk scan-keeper-disk; do
+    jq -e '(.kinds.qcow2 // 0) + (.kinds.file // 0) >= 2 and (.kinds.qcow2 // 0) >= 1' \
+      "$RUN_DIR/$scan_file.json" >/dev/null || coverage=false
+  done
+  [[ $coverage == true ]] || log "a leak search did not cover its target; see $RUN_DIR/scan-*.json"
+
   local cases_total ok=true
   cases_total=$(wc -l <"$CASES")
   ((FAILED == 0)) || ok=false
   ((secret_ckpt == 0 && secret_disk == 0 && secret_restored == 0)) || ok=false
   ((token_ckpt > 0 && keeper_disk > 0)) || ok=false
+  [[ $coverage == true ]] || ok=false
 
   cat >"$METRICS" <<EOF
 # Eggomi S4 secret capability RPC (L2 host-native), smolvm $SMOLVM_VERSION.
@@ -165,6 +177,7 @@ eggomi_s4_secret_hits{target="browser_disk"} $secret_disk
 eggomi_s4_secret_hits{target="restored_browser_disk"} $secret_restored
 eggomi_s4_positive_control_hits{target="session_token_in_browser_checkpoint"} $token_ckpt
 eggomi_s4_positive_control_hits{target="secret_on_keeper_disk"} $keeper_disk
+eggomi_s4_scan_coverage $([[ $coverage == true ]] && echo 1 || echo 0)
 eggomi_s4_checkpoint_seconds $ckpt_seconds
 eggomi_s4_ok $([[ $ok == true ]] && echo 1 || echo 0)
 EOF

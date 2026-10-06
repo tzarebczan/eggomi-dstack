@@ -22,15 +22,18 @@ Subcommands (each prints one JSON object unless noted):
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
+import zlib
 from pathlib import Path
-from typing import BinaryIO, Dict, Iterable, Iterator, List
+from typing import BinaryIO, Dict, Iterable, Iterator, List, Optional
 
 CHUNK = 8 << 20
 FOOTER = struct.Struct("<8sIQQQQQI")
@@ -205,22 +208,32 @@ def count_stream(chunks: Iterable[bytes], needles: Dict[str, bytes]) -> Dict[str
 
 
 def sparse_chunks(handle: BinaryIO) -> Iterator[bytes]:
-    """Yield only the allocated extents of a sparse file."""
+    """Yield the allocated extents of a file, or all of it without SEEK_DATA.
+
+    Only ``ENXIO`` (no data past this offset) ends the walk early. A file
+    system without SEEK_DATA is read sequentially; any other error raises, so
+    a failed read can never pass as a clean search.
+    """
     fd = handle.fileno()
     size = os.fstat(fd).st_size
     offset = 0
     while offset < size:
         try:
             data = os.lseek(fd, offset, os.SEEK_DATA)
-        except OSError:
-            return
-        hole = os.lseek(fd, data, os.SEEK_HOLE)
+            hole = os.lseek(fd, data, os.SEEK_HOLE)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                return
+            if exc.errno in (errno.EINVAL, errno.EOPNOTSUPP):
+                data, hole = offset, size
+            else:
+                raise
         os.lseek(fd, data, os.SEEK_SET)
         remaining = hole - data
         while remaining > 0:
             block = os.read(fd, min(CHUNK, remaining))
             if not block:
-                return
+                raise OSError(errno.EIO, f"short read at offset {hole - remaining}")
             remaining -= len(block)
             yield block
         # A hole splits two extents; a needle cannot straddle zeros it lacks.
@@ -229,13 +242,19 @@ def sparse_chunks(handle: BinaryIO) -> Iterator[bytes]:
 
 
 def checkpoint_payload(handle: BinaryIO) -> Iterator[bytes]:
-    """Yield the decompressed payload (a tar stream) of a smolvm checkpoint."""
+    """Yield the decompressed payload (a tar stream) of a smolvm checkpoint.
+
+    Every zstd frame in the payload is decoded, and a payload that ends inside
+    a frame raises: a truncated decode must not look like a clean search.
+    """
     handle.seek(-FOOTER_SIZE, os.SEEK_END)
     magic, _version, _stub, offset, size, _moff, _msize, _crc = FOOTER.unpack(
         handle.read(FOOTER.size)
     )
     if magic != MAGIC:
         raise ValueError("not a smolvm checkpoint container")
+    if offset + size > os.fstat(handle.fileno()).st_size - FOOTER_SIZE:
+        raise ValueError("checkpoint payload extends past the container")
     handle.seek(offset)
     try:
         from compression import zstd  # Python 3.14+
@@ -244,15 +263,24 @@ def checkpoint_payload(handle: BinaryIO) -> Iterator[bytes]:
     if zstd is not None:
         decompressor = zstd.ZstdDecompressor()
         remaining = size
-        while remaining > 0 and not decompressor.eof:
-            block = handle.read(min(CHUNK, remaining))
-            if not block:
-                break
-            remaining -= len(block)
-            out = decompressor.decompress(block)
+        data = b""
+        while True:
+            if decompressor.eof:
+                data = decompressor.unused_data
+                if not data and remaining == 0:
+                    return
+                decompressor = zstd.ZstdDecompressor()
+            if not data and decompressor.needs_input:
+                if remaining == 0:
+                    raise ValueError("checkpoint payload ends inside a zstd frame")
+                data = handle.read(min(CHUNK, remaining))
+                if not data:
+                    raise ValueError("checkpoint payload is shorter than its footer says")
+                remaining -= len(data)
+            out = decompressor.decompress(data, max_length=CHUNK)
+            data = b""
             if out:
                 yield out
-        return
     proc = subprocess.Popen(
         ["zstd", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE
     )
@@ -268,8 +296,6 @@ def checkpoint_payload(handle: BinaryIO) -> Iterator[bytes]:
             proc.stdin.write(block)
         proc.stdin.close()
 
-    import threading
-
     writer = threading.Thread(target=feed, daemon=True)
     writer.start()
     while True:
@@ -282,40 +308,242 @@ def checkpoint_payload(handle: BinaryIO) -> Iterator[bytes]:
         raise ValueError("zstd failed to decompress the checkpoint payload")
 
 
+QCOW2_MAGIC = b"QFI\xfb"
+
+
+class Qcow2:
+    """Read-only logical view of a qcow2 image and its backing chain.
+
+    A secret written by the guest is contiguous in the disk's logical address
+    space, but qcow2 may store logically adjacent clusters far apart, compress
+    them, or leave them in a backing file. Searching the image file alone can
+    therefore miss it. Unallocated and zero clusters read as ``None``.
+    """
+
+    def __init__(self, path: Path, depth: int = 0) -> None:
+        """Parse the header and L1 table; open the backing image if any."""
+        if depth > 32:
+            raise ValueError("qcow2 backing chain is deeper than 32")
+        self.path = path
+        self.handle = path.open("rb")
+        header = self.handle.read(112)
+        (magic, version, backing_offset, backing_size, cluster_bits, size,
+         crypt, l1_size, l1_offset) = struct.unpack(">4sIQIIQIIQ", header[:48])
+        if magic != QCOW2_MAGIC:
+            raise ValueError(f"{path} is not qcow2")
+        if crypt:
+            raise ValueError(f"{path}: encrypted qcow2 is not supported")
+        self.compression = 0
+        if version >= 3:
+            incompatible = struct.unpack(">Q", header[72:80])[0]
+            if incompatible & ~0b11:  # only dirty and corrupt are understood
+                raise ValueError(f"{path}: unsupported qcow2 features {incompatible:#x}")
+            header_length = struct.unpack(">I", header[100:104])[0]
+            if header_length > 104:
+                self.compression = header[104]
+        self.cluster_bits = cluster_bits
+        self.cluster_size = 1 << cluster_bits
+        self.size = size
+        self.handle.seek(l1_offset)
+        self.l1 = struct.unpack(f">{l1_size}Q", self.handle.read(8 * l1_size))
+        self.l2_entries = self.cluster_size // 8
+        self._l2_cache: Dict[int, tuple] = {}
+        self.backing: "Optional[object]" = None
+        if backing_offset and backing_size:
+            self.handle.seek(backing_offset)
+            name = self.handle.read(backing_size).decode("utf-8")
+            backing_path = (path.parent / name).resolve()
+            with backing_path.open("rb") as probe:
+                is_qcow2 = probe.read(4) == QCOW2_MAGIC
+            self.backing = Qcow2(backing_path, depth + 1) if is_qcow2 else RawImage(backing_path)
+
+    def close(self) -> None:
+        """Close this image and its backing chain."""
+        self.handle.close()
+        if self.backing is not None:
+            self.backing.close()
+
+    def _l2(self, index: int) -> Optional[tuple]:
+        l1_index = index // self.l2_entries
+        if l1_index >= len(self.l1):
+            return None
+        offset = self.l1[l1_index] & 0x00FFFFFFFFFFFE00
+        if not offset:
+            return None
+        table = self._l2_cache.get(offset)
+        if table is None:
+            self.handle.seek(offset)
+            table = struct.unpack(f">{self.l2_entries}Q", self.handle.read(self.cluster_size))
+            self._l2_cache = {offset: table}
+        return table
+
+    def _cluster(self, index: int) -> Optional[bytes]:
+        """Return this layer's bytes for cluster ``index``; fall through to backing."""
+        table = self._l2(index)
+        entry = table[index % self.l2_entries] if table is not None else 0
+        # Bit 63 is the COPIED flag (refcount 1); bit 62 marks compression.
+        if entry & (1 << 62):
+            return self._compressed(entry)
+        if entry & 1:
+            return None  # reads as zeros, hides any backing data
+        host = entry & 0x00FFFFFFFFFFFE00
+        if host:
+            self.handle.seek(host)
+            return self.handle.read(self.cluster_size)
+        if self.backing is None:
+            return None
+        return self.backing.read(index * self.cluster_size, self.cluster_size)
+
+    def _compressed(self, entry: int) -> bytes:
+        x = 62 - (self.cluster_bits - 8)
+        host = entry & ((1 << x) - 1)
+        sectors = ((entry >> x) & ((1 << (self.cluster_bits - 8)) - 1)) + 1
+        length = sectors * 512 - (host & 511)
+        self.handle.seek(host)
+        raw = self.handle.read(length)
+        if self.compression == 0:
+            return zlib.decompressobj(-12).decompress(raw, self.cluster_size)
+        try:
+            from compression import zstd
+        except ImportError as exc:
+            raise ValueError("zstd-compressed qcow2 clusters need Python 3.14") from exc
+        return zstd.ZstdDecompressor().decompress(raw, self.cluster_size)
+
+    def read(self, offset: int, length: int) -> Optional[bytes]:
+        """Return logical bytes, or ``None`` when the whole range is unallocated."""
+        parts = []
+        any_data = False
+        end = min(offset + length, self.size)
+        while offset < end:
+            index = offset >> self.cluster_bits
+            within = offset - (index << self.cluster_bits)
+            take = min(self.cluster_size - within, end - offset)
+            data = self._cluster(index)
+            if data is None:
+                parts.append(bytes(take))
+            else:
+                any_data = True
+                parts.append(data[within : within + take].ljust(take, b"\0"))
+            offset += take
+        return b"".join(parts) if any_data else None
+
+    def chunks(self) -> Iterator[bytes]:
+        """Yield the disk's allocated logical content, in logical order."""
+        gap = False
+        for index in range((self.size + self.cluster_size - 1) >> self.cluster_bits):
+            data = self.read(index << self.cluster_bits, self.cluster_size)
+            if data is None:
+                if not gap:
+                    yield b"\0"
+                    gap = True
+                continue
+            gap = False
+            yield data
+
+
+class RawImage:
+    """A raw backing file, read with holes as ``None``."""
+
+    def __init__(self, path: Path) -> None:
+        """Open ``path``."""
+        self.handle = path.open("rb")
+        self.size = os.fstat(self.handle.fileno()).st_size
+
+    def close(self) -> None:
+        """Close the file."""
+        self.handle.close()
+
+    def read(self, offset: int, length: int) -> Optional[bytes]:
+        """Return the bytes at ``offset``; ``None`` past the end or in a hole."""
+        if offset >= self.size:
+            return None
+        try:
+            data = os.lseek(self.handle.fileno(), offset, os.SEEK_DATA)
+        except OSError as exc:
+            if exc.errno != errno.ENXIO:
+                if exc.errno not in (errno.EINVAL, errno.EOPNOTSUPP):
+                    raise
+                data = offset
+            else:
+                return None
+        if data >= offset + length:
+            return None
+        self.handle.seek(offset)
+        return self.handle.read(min(length, self.size - offset))
+
+
+def file_kind(path: Path) -> str:
+    """Classify a file as a smolvm checkpoint, a qcow2 image, or plain bytes."""
+    with path.open("rb") as handle:
+        if handle.read(4) == QCOW2_MAGIC:
+            return "qcow2"
+        try:
+            handle.seek(-FOOTER_SIZE, os.SEEK_END)
+        except OSError:
+            return "file"
+        if handle.read(len(MAGIC)) == MAGIC:
+            return "checkpoint"
+    return "file"
+
+
 def is_checkpoint(path: Path) -> bool:
     """Return whether ``path`` ends with a SMOLPACK footer."""
     try:
-        with path.open("rb") as handle:
-            handle.seek(-FOOTER_SIZE, os.SEEK_END)
-            return handle.read(len(MAGIC)) == MAGIC
+        return file_kind(path) == "checkpoint"
     except OSError:
         return False
 
 
+def _targets(roots: List[Path]) -> List[Path]:
+    """Every regular file under ``roots``, symlinks resolved, without repeats.
+
+    A missing root raises: a typo must not become a clean search.
+    """
+    seen: Dict[Path, None] = {}
+    for root in roots:
+        if not root.exists():
+            raise FileNotFoundError(f"scan target does not exist: {root}")
+        candidates = [root] if not root.is_dir() else sorted(root.rglob("*"))
+        for path in candidates:
+            if path.is_file():
+                seen.setdefault(path.resolve(), None)
+    return list(seen)
+
+
 def scan(needle: bytes, paths: List[Path]) -> Dict[str, object]:
-    """Count the needle's encodings in every regular file under ``paths``."""
+    """Count the needle's encodings in every regular file under ``paths``.
+
+    Every file is searched as stored. A checkpoint is also searched decoded,
+    and a qcow2 image also through its logical view and backing chain.
+    """
     needles = encodings(needle)
     files: Dict[str, Dict[str, object]] = {}
     total = {name: 0 for name in needles}
-    scanned = 0
-    for root in paths:
-        candidates = [root] if root.is_file() else sorted(p for p in root.rglob("*"))
-        for path in candidates:
-            if not path.is_file() or path.is_symlink():
-                continue
-            with path.open("rb") as handle:
-                if is_checkpoint(path):
-                    kind = "checkpoint"
-                    counts = count_stream(checkpoint_payload(handle), needles)
-                else:
-                    kind = "file"
-                    counts = count_stream(sparse_chunks(handle), needles)
-            scanned += 1
-            if any(counts.values()):
-                files[str(path)] = {"kind": kind, **counts}
+    kinds: Dict[str, int] = {}
+    for path in _targets(paths):
+        kind = file_kind(path)
+        kinds[kind] = kinds.get(kind, 0) + 1
+        with path.open("rb") as handle:
+            passes = {"stored": count_stream(sparse_chunks(handle), needles)}
+            if kind == "checkpoint":
+                passes["decoded"] = count_stream(checkpoint_payload(handle), needles)
+        if kind == "qcow2":
+            image = Qcow2(path)
+            try:
+                passes["logical"] = count_stream(image.chunks(), needles)
+            finally:
+                image.close()
+        for counts in passes.values():
             for name, value in counts.items():
                 total[name] += value
-    return {"files_scanned": scanned, "hits": total, "files_with_hits": files}
+        if any(any(counts.values()) for counts in passes.values()):
+            files[str(path)] = {"kind": kind, **passes}
+    return {
+        "files_scanned": sum(kinds.values()),
+        "kinds": kinds,
+        "hits": total,
+        "files_with_hits": files,
+    }
 
 
 def main(argv: List[str] | None = None) -> int:

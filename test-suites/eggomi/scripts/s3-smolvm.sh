@@ -51,6 +51,11 @@ mem_sample() {
   jq -r '.rss' <<<"$rss"
 }
 
+probe_covered() {
+  jq -e --argjson t0 "$1" --argjson t1 "$2" \
+    '.attempts >= 20 and .first <= $t0 and .last >= $t1' "$RUN_DIR/probe-summary.json" >/dev/null
+}
+
 keeper_rpc_from() {
   local machine=$1
   [[ "$(guard_ctl "$machine" '{"cmd": "ping"}' | jq -r '.code')" == ok ]]
@@ -69,14 +74,17 @@ for (let i = 0; i < $((TAB_MIB / 4)); i++) {
 document.body.textContent = "tab held " + held.length * 4 + " MiB";
 </script></body>
 EOF
-  sv machine cp "$page" "$machine:/tmp/tab.html" >/dev/null 2>&1
-  sv machine exec --name "$machine" -- chromium --headless=new --no-sandbox --no-zygote \
+  sv machine cp "$page" "$machine:/tmp/tab.html" >/dev/null 2>&1 || return 1
+  local dom
+  dom=$(sv machine exec --name "$machine" -- chromium --headless=new --no-sandbox --no-zygote \
     --disable-gpu --disable-dev-shm-usage --user-data-dir=/tmp/tab-profile \
-    --dump-dom file:///tmp/tab.html 2>/dev/null | grep -q "tab held"
+    --dump-dom file:///tmp/tab.html 2>/dev/null) || return 1
+  # The rendered body, not the script source: the allocation completed.
+  grep -q "<body>tab held $((TAB_MIB / 4 * 4)) MiB" <<<"$dom"
 }
 
 main() {
-  mkdir -p "$RUN_DIR"
+  begin_run
   smolvm_gate
   if [[ "${1:-}" == --preflight ]]; then
     log "preflight passed (smolvm $SMOLVM_VERSION)"
@@ -163,7 +171,8 @@ main() {
   local probe_pid=$!
   sleep 1
 
-  local pid before_stop
+  local pid before_stop probe_t0 probe_t1
+  probe_t0=$(date +%s.%N)
   pid=$(machine_pid "$B")
   before_stop=$(host_rss "$B" | jq -r '.rss')
   t=$(now); sv machine stop --name "$B" >/dev/null; metric 'lifecycle_seconds{machine="browser",op="stop"}' "$(since "$t")"
@@ -196,11 +205,17 @@ main() {
   check keeper_rpc_from_branch keeper_rpc_from "$C"
   mem_sample "$R" restored after_branch >/dev/null
   mem_sample "$C" branch idle >/dev/null
+  probe_t1=$(date +%s.%N)
   sleep 1
 
   touch "$pstop"
-  wait "$probe_pid" || true
+  local probe_rc=0
+  wait "$probe_pid" || probe_rc=$?
+  check keeper_probe_exited_cleanly test "$probe_rc" -eq 0
   host_tool probe-summary "$plog" >"$RUN_DIR/probe-summary.json"
+  # Coverage: the probe ran through stop, restore, and branch (several
+  # seconds at 10 Hz), so a dead or late probe cannot pass on an empty log.
+  check keeper_probe_covered_lifecycle probe_covered "$probe_t0" "$probe_t1"
   metric 'keeper_probe_attempts_total' "$(jq -r '.attempts' "$RUN_DIR/probe-summary.json")"
   metric 'keeper_probe_failures_total' "$(jq -r '.failures' "$RUN_DIR/probe-summary.json")"
   metric 'keeper_probe_max_gap_seconds' "$(jq -r '.max_gap_seconds // "NaN"' "$RUN_DIR/probe-summary.json")"
