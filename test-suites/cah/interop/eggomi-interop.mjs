@@ -10,6 +10,8 @@
 // Modes:
 //   vectors                      print the shared vectors as JSON
 //   verify-registry <doc> <pub>  readRegistry() on a stack-written registry
+//   verify-sequence <pub> <doc>...  readRegistry() on each document in turn,
+//                                with one Watermarks, as a running keeper
 //   client <sock> <workload-private> <keeper-public> <calls-json> [go-file]
 //                                openChannel() to a stack keeper, then calls
 //   server <sock> <keeper-private> <workload-public> [stale-after]
@@ -165,6 +167,51 @@ function rowVectors() {
   };
 }
 
+/**
+ * A first bind: the same row before and after the launcher sets its channel
+ * key. Eggomi's keeper reads both with one Watermarks. The stack must
+ * produce `after` (generation 2) from `before`; a bind that kept
+ * generation 1 is refused.
+ */
+function firstBindVectors() {
+  const { privateKey, publicRaw } = launcherKeys(FIXED.launcher_seed);
+  const doc = { trust_domain: FIXED.trust_domain, tenant: FIXED.tenant };
+  const workloadPublic = hex(noise.generateKeyPair(fromHex(FIXED.workload_static)).publicKey);
+  const base = {
+    role: "browser-guard",
+    instance_id: "browser-1",
+    boot_id: "boot-browser-1",
+    boot_generation: 1,
+    boot_history: ["boot-browser-1"],
+    channel_public: null,
+    cert_fingerprint: null,
+    pid: null,
+    starttime: null,
+  };
+  const signed = (raw) => ({
+    ...raw,
+    launcher_sig: hex(sign(null, registry.rowMessage(toRow(raw, doc)), privateKey)),
+  });
+  const before = signed(base);
+  const after = signed({ ...base, channel_public: workloadPublic, boot_generation: 2 });
+  const stale = signed({ ...base, channel_public: workloadPublic });
+  const document = (row) => ({ schema_version: registry.REGISTRY_SCHEMA, ...doc, workloads: [row] });
+  const read = (rows) => {
+    const marks = new registry.Watermarks();
+    const keys = [registry.launcherKey(publicRaw)];
+    return rows.map((row) => {
+      const reading = registry.readRegistry(document(row), keys, marks);
+      return reading.rows.length === 1 ? "accepted" : reading.refused[0].reason;
+    });
+  };
+  return {
+    before,
+    after,
+    eggomi_reads_before_then_after: read([before, after]),
+    eggomi_reads_before_then_same_generation: read([before, stale]),
+  };
+}
+
 function vectors() {
   return {
     format: "cah-eggomi-interop/v1",
@@ -176,6 +223,7 @@ function vectors() {
     fixed: FIXED,
     channel: channelVectors(),
     rows: rowVectors(),
+    first_bind: firstBindVectors(),
   };
 }
 
@@ -190,6 +238,18 @@ function verifyRegistry(docPath, publicHex) {
     rows: reading.rows.map((r) => r.instanceId),
     refused: reading.refused.map((r) => ({ instance_id: r.instanceId, reason: r.reason })),
   };
+}
+
+function verifySequence(publicHex, docPaths) {
+  const marks = new registry.Watermarks();
+  const keys = [registry.launcherKey(fromHex(publicHex))];
+  return docPaths.map((path) => {
+    const reading = registry.readRegistry(JSON.parse(readFileSync(path, "utf8")), keys, marks);
+    return {
+      rows: reading.rows.map((r) => r.instanceId),
+      refused: reading.refused.map((r) => ({ instance_id: r.instanceId, reason: r.reason })),
+    };
+  });
 }
 
 async function client(sockPath, workloadPrivate, keeperPublic, callsJson, goFile) {
@@ -253,6 +313,8 @@ if (mode === "vectors") {
   process.stdout.write(`${JSON.stringify(vectors(), null, 2)}\n`);
 } else if (mode === "verify-registry") {
   process.stdout.write(`${JSON.stringify(verifyRegistry(args[0], args[1]))}\n`);
+} else if (mode === "verify-sequence") {
+  process.stdout.write(`${JSON.stringify(verifySequence(args[0], args.slice(1)))}\n`);
 } else if (mode === "client") {
   const out = await client(args[0], args[1], args[2], args[3], args[4]);
   process.stdout.write(`${JSON.stringify(out)}\n`);

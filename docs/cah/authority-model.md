@@ -99,10 +99,13 @@ access graph returns `denied_role` before the grant is examined.
 
 Rebinding a pid, a start time, or a certificate fingerprint advances
 `boot_generation` and revokes that instance's issued grants. A fingerprint
-change is a rebind whether or not the row already has a pid. The first bind,
-which records a fingerprint or a pid on a row that has neither, does not
-advance the generation. Repeating the same fingerprint on that empty row does
-not either. `set_boot` accepts only a boot id that is not already in
+change is a rebind whether or not the row already has a pid. Any change to a
+stored identity field advances the generation, including the first bind that
+records a pid, a fingerprint or a channel key on a row that has none (the
+launcher reports it as `bound`, not `rebound`). That is Eggomi's rule: its
+keeper refuses an incarnation change at the same generation
+(`rebind_without_generation`). Repeating the stored values does not
+advance. `set_boot` accepts only a boot id that is not already in
 `boot_history`. Repeating an older id raises `BootRollback`. A generation
 mismatch on resolve is terminal `denied_boot`. Returning to an earlier
 fingerprint does not revive a grant that the rebind revoked. `denied_boot`

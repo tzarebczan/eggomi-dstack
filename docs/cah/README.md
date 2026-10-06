@@ -37,7 +37,8 @@ keeper public key in the registry. An `omi-runner` call to the broker is
 admitted browser that presents the same `grant_ref` is `denied_recipient`
 at resolve. Those are different checks. A boot id only advances. A pid
 rebind, a certificate fingerprint change, and a channel public key change
-all advance `boot_generation` and revoke that instance's issued grants. A
+all advance `boot_generation` (so does a first bind onto an empty row) and
+revoke that instance's issued grants. A
 generation mismatch is `denied_boot`. An unadmitted certificate and a
 connector with no allow edge are refused. Role, instance, and frame
 mismatches leave the grant issued. A second redeem of a consumed grant

@@ -291,11 +291,12 @@ def bind_process(
 ) -> BindResult:
     """Attach a live pid, and optionally a certificate, to an instance.
 
-    The first bind records a pid or a fingerprint on a row that has neither
-    and does not advance ``boot_generation``. A later bind with a different
-    pid, start time, or certificate fingerprint does. A fingerprint change
-    is a rebind even when pid and start time are still empty. Callers revoke
-    outstanding grants when the result kind is ``rebound``.
+    Any change to the stored pid, start time or certificate fingerprint
+    advances ``boot_generation``, including the first bind onto a row that
+    has none of them (Eggomi's keeper refuses an incarnation change at the
+    same generation). Repeating the stored values is ``unchanged``. The kind
+    is ``bound`` for a first bind and ``rebound`` otherwise; callers revoke
+    outstanding grants on ``rebound``.
     """
     starttime = process_starttime(pid) if pid is not None else None
 
@@ -311,7 +312,6 @@ def bind_process(
                 current_pid == pid
                 and current_start == starttime
                 and current_fp == next_fp
-                and current_pid is not None
             )
             if same:
                 return BindResult(
@@ -328,8 +328,7 @@ def bind_process(
                 and current_start is None
                 and not fingerprint_changed
             )
-            if not fresh:
-                row["boot_generation"] = _generation(row.get("boot_generation")) + 1
+            row["boot_generation"] = _generation(row.get("boot_generation")) + 1
             row["pid"] = pid
             row["starttime"] = starttime
             if fingerprint is not None:
@@ -346,9 +345,9 @@ def bind_process(
 def rebind_channel(path: Path, instance_id: str, channel_public: str) -> BindResult:
     """Install or rotate one instance's Unix channel public key.
 
-    The first write onto an empty ``channel_public`` does not advance
-    ``boot_generation``. Any later change does, including a return to a key
-    that was used before. The caller revokes outstanding grants on
+    Every change advances ``boot_generation``: the first write onto an
+    empty ``channel_public`` and any later change, including a return to a
+    key that was used before. The caller revokes outstanding grants on
     ``rebound`` and advances that guard's fence epoch.
     """
     _require_channel(channel_public)
@@ -363,8 +362,7 @@ def rebind_channel(path: Path, instance_id: str, channel_public: str) -> BindRes
                     "unchanged", instance_id, _generation(row.get("boot_generation"))
                 )
             fresh = not (isinstance(current, str) and bool(current))
-            if not fresh:
-                row["boot_generation"] = _generation(row.get("boot_generation")) + 1
+            row["boot_generation"] = _generation(row.get("boot_generation")) + 1
             row["channel_public"] = channel_public
             kind = "bound" if fresh else "rebound"
             return BindResult(
@@ -517,6 +515,13 @@ def _write_lock(path: Path, mode: int) -> Iterator[None]:
 
 
 def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
+    """Advance the generation of a row whose stored identity changed.
+
+    Every launcher write path ends here, so a change to role, boot id,
+    channel key, fingerprint, pid or start time (including null to a value)
+    that the caller did not already count moves ``boot_generation`` past the
+    stored one.
+    """
     if not path.exists() or path.stat().st_size == 0:
         return
     previous = load_registry(path)
@@ -525,18 +530,21 @@ def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
         old = old_rows.get(row.get("instance_id"))
         if not isinstance(old, dict):
             continue
-        old_channel = old.get("channel_public")
-        new_channel = row.get("channel_public")
-        if (
-            isinstance(old_channel, str)
-            and old_channel
-            and isinstance(new_channel, str)
-            and new_channel
-            and old_channel != new_channel
-            and _generation(row.get("boot_generation"))
-            <= _generation(old.get("boot_generation"))
+        changed = any(old.get(name) != row.get(name) for name in _IDENTITY_FIELDS)
+        if changed and _generation(row.get("boot_generation")) <= _generation(
+            old.get("boot_generation")
         ):
             row["boot_generation"] = _generation(old.get("boot_generation")) + 1
+
+
+_IDENTITY_FIELDS = (
+    "role",
+    "boot_id",
+    "channel_public",
+    "cert_fingerprint",
+    "pid",
+    "starttime",
+)
 
 
 def _claims(row: Dict[str, object]) -> List[str]:

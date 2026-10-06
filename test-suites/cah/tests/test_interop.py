@@ -165,6 +165,40 @@ class InteropVectorTests(unittest.TestCase):
         )
         self.assertEqual(rows["eggomi_refuses"], [])
 
+    def test_first_bind_produces_the_row_eggomi_accepts(self) -> None:
+        """rebind_channel on Eggomi's pre-bind row gives its accepted post-bind row."""
+        vectors = _vectors()
+        fixed = vectors["fixed"]
+        first_bind = vectors["first_bind"]
+        self.assertEqual(
+            first_bind["eggomi_reads_before_then_after"], ["accepted", "accepted"]
+        )
+        self.assertEqual(
+            first_bind["eggomi_reads_before_then_same_generation"],
+            ["accepted", "rebind_without_generation"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            launcher = Path(tmp) / "launcher"
+            launcher.mkdir(mode=0o700)
+            (launcher / "row-signing.key").write_bytes(
+                bytes.fromhex(fixed["launcher_seed"])
+            )
+            before = dict(first_bind["before"])
+            save_registry(
+                path,
+                AdmissionRegistry(
+                    trust_domain=fixed["trust_domain"],
+                    tenant=fixed["tenant"],
+                    workloads=[before],
+                ),
+            )
+            saved = json.loads(path.read_text(encoding="utf-8"))["workloads"][0]
+            self.assertEqual(saved, first_bind["before"])
+            rebind_channel(path, "browser-1", vectors["channel"]["workload_public"])
+            saved = json.loads(path.read_text(encoding="utf-8"))["workloads"][0]
+        self.assertEqual(saved, first_bind["after"])
+
     def test_saved_registry_carries_eggomis_signatures(self) -> None:
         """save_registry writes the same launcher_sig Eggomi computed."""
         vectors = _vectors()
@@ -296,6 +330,56 @@ class LiveEggomiTests(unittest.TestCase):
                 {"instance_id": "browser-1", "reason": "unattributed"},
                 {"instance_id": "connector-1", "reason": "unattributed"},
             ],
+        )
+
+    def test_eggomi_keeper_accepts_a_stack_first_bind(self) -> None:
+        """One Eggomi Watermarks reads the row before and after bind_process."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "admission.json"
+            save_registry(
+                path,
+                AdmissionRegistry(
+                    trust_domain="lab.cah",
+                    tenant="tenant-lab-1",
+                    workloads=[_row("omi-runner", "omi-1", b"\x01" * 32)],
+                ),
+            )
+            before = root / "before.json"
+            before.write_bytes(path.read_bytes())
+            bind_process(path, "omi-1", os.getpid())
+            after = root / "after.json"
+            after.write_bytes(path.read_bytes())
+            stale = json.loads(before.read_text(encoding="utf-8"))
+            signer = LauncherSigner.at(root / "launcher")
+            bound = json.loads(after.read_text(encoding="utf-8"))["workloads"][0]
+            row = stale["workloads"][0]
+            row.update(pid=bound["pid"], starttime=bound["starttime"])
+            row["launcher_sig"] = signer.sign_row("lab.cah", "tenant-lab-1", row)
+            same_generation = root / "same-generation.json"
+            same_generation.write_text(json.dumps(stale), encoding="utf-8")
+            public = signer.public.hex()
+            done = subprocess.run(
+                _node("verify-sequence", public, str(before), str(after)),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=60,
+            )
+            control = subprocess.run(
+                _node("verify-sequence", public, str(before), str(same_generation)),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=60,
+            )
+        self.assertEqual(bound["boot_generation"], 2)
+        self.assertEqual(
+            [r["rows"] for r in json.loads(done.stdout)], [["omi-1"], ["omi-1"]]
+        )
+        self.assertEqual(
+            json.loads(control.stdout)[1]["refused"],
+            [{"instance_id": "omi-1", "reason": "rebind_without_generation"}],
         )
 
     def test_eggomi_workload_calls_the_stack_keeper(self) -> None:

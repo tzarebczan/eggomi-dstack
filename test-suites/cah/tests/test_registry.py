@@ -53,7 +53,7 @@ class RegistryTests(unittest.TestCase):
             )
             first = bind_process(path, "browser-1", os.getpid())
             self.assertEqual(first.kind, "bound")
-            self.assertEqual(first.boot_generation, 1)
+            self.assertEqual(first.boot_generation, 2)
             child = subprocess.Popen(["sleep", "30"])
             try:
                 second = bind_process(path, "browser-1", child.pid)
@@ -61,16 +61,16 @@ class RegistryTests(unittest.TestCase):
                 child.kill()
                 child.wait(timeout=5)
             self.assertEqual(second.kind, "rebound")
-            self.assertEqual(second.boot_generation, 2)
+            self.assertEqual(second.boot_generation, 3)
             generation = set_boot(path, "browser-1", "boot-2")
-            self.assertEqual(generation, 3)
+            self.assertEqual(generation, 4)
             with self.assertRaises(BootRollback):
                 set_boot(path, "browser-1", "boot-1")
             row = load_registry(path).find_instance("browser-1")
             self.assertIsNotNone(row)
             assert row is not None
             self.assertEqual(row.boot_id, "boot-2")
-            self.assertEqual(row.boot_generation, 3)
+            self.assertEqual(row.boot_generation, 4)
 
     def test_cert_only_rebind_advances_and_return_does_not_revive(self) -> None:
         """Fingerprint A to B is generation 2, and A again does not revive the grant."""
@@ -101,10 +101,10 @@ class RegistryTests(unittest.TestCase):
             )
             first = bind_process(path, "browser-1", None, "aa")
             self.assertEqual(first.kind, "bound")
-            self.assertEqual(first.boot_generation, 1)
+            self.assertEqual(first.boot_generation, 2)
             repeated = bind_process(path, "browser-1", None, "aa")
-            self.assertEqual(repeated.kind, "bound")
-            self.assertEqual(repeated.boot_generation, 1)
+            self.assertEqual(repeated.kind, "unchanged")
+            self.assertEqual(repeated.boot_generation, 2)
             store = GrantStore(grants_path, journal_path, epoch_path)
             record = store.issue(
                 _party("omi-runner", "omi-1", "boot-omi-1", "omi-fp"),
@@ -134,7 +134,7 @@ class RegistryTests(unittest.TestCase):
             epoch_snapshot = epoch_path.read_bytes()
             second = bind_process(path, "browser-1", None, "bb")
             self.assertEqual(second.kind, "rebound")
-            self.assertEqual(second.boot_generation, 2)
+            self.assertEqual(second.boot_generation, 3)
             if second.kind == "rebound":
                 revoke_instance_grants(
                     grants_path, journal_path, epoch_path, "browser-1"
@@ -144,12 +144,12 @@ class RegistryTests(unittest.TestCase):
             )
             third = bind_process(path, "browser-1", None, "aa")
             self.assertEqual(third.kind, "rebound")
-            self.assertEqual(third.boot_generation, 3)
+            self.assertEqual(third.boot_generation, 4)
             returned = load_registry(path).find_instance("browser-1")
             self.assertIsNotNone(returned)
             assert returned is not None
             self.assertEqual(returned.cert_fingerprint, "aa")
-            self.assertEqual(returned.boot_generation, 3)
+            self.assertEqual(returned.boot_generation, 4)
             grants_path.write_bytes(snapshot)
             epoch_path.write_bytes(epoch_snapshot)
             reloaded = GrantStore(grants_path, journal_path, epoch_path)
@@ -193,10 +193,10 @@ class RegistryTests(unittest.TestCase):
             pid = os.getpid()
             first = bind_process(path, "browser-1", pid, "aa")
             self.assertEqual(first.kind, "bound")
-            self.assertEqual(first.boot_generation, 1)
+            self.assertEqual(first.boot_generation, 2)
             second = bind_process(path, "browser-1", pid, "bb")
             self.assertEqual(second.kind, "rebound")
-            self.assertEqual(second.boot_generation, 2)
+            self.assertEqual(second.boot_generation, 3)
 
     def test_channel_key_rebind_advances_and_return_does_not_revive(self) -> None:
         """Channel key A to B is generation 2, and A again does not revive the grant."""
@@ -230,10 +230,10 @@ class RegistryTests(unittest.TestCase):
             )
             first = rebind_channel(path, "browser-1", key_a)
             self.assertEqual(first.kind, "bound")
-            self.assertEqual(first.boot_generation, 1)
+            self.assertEqual(first.boot_generation, 2)
             repeated = rebind_channel(path, "browser-1", key_a)
             self.assertEqual(repeated.kind, "unchanged")
-            self.assertEqual(repeated.boot_generation, 1)
+            self.assertEqual(repeated.boot_generation, 2)
             store = GrantStore(grants_path, journal_path, epoch_path)
             recipient = _party("browser-guard", "browser-1", "boot-1", "fp", key_a)
             record = store.issue(
@@ -261,11 +261,11 @@ class RegistryTests(unittest.TestCase):
             epoch_snapshot = epoch_path.read_bytes()
             second = rebind_channel(path, "browser-1", key_b)
             self.assertEqual(second.kind, "rebound")
-            self.assertEqual(second.boot_generation, 2)
+            self.assertEqual(second.boot_generation, 3)
             revoke_instance_grants(grants_path, journal_path, epoch_path, "browser-1")
             third = rebind_channel(path, "browser-1", key_a)
             self.assertEqual(third.kind, "rebound")
-            self.assertEqual(third.boot_generation, 3)
+            self.assertEqual(third.boot_generation, 4)
             grants_path.write_bytes(snapshot)
             epoch_path.write_bytes(epoch_snapshot)
             reloaded = GrantStore(grants_path, journal_path, epoch_path)
@@ -290,7 +290,7 @@ class RegistryTests(unittest.TestCase):
             rewritten = load_registry(path).find_instance("browser-1")
             self.assertIsNotNone(rewritten)
             assert rewritten is not None
-            self.assertEqual(rewritten.boot_generation, 4)
+            self.assertEqual(rewritten.boot_generation, 5)
 
 
 def _party(
@@ -313,6 +313,70 @@ def _party(
         starttime=None,
         channel_public=channel,
     )
+
+
+class FirstBindTests(unittest.TestCase):
+    """Any change to a stored identity field advances boot_generation."""
+
+    def _empty(self, path: Path) -> None:
+        save_registry(
+            path,
+            AdmissionRegistry(
+                trust_domain="lab.cah",
+                tenant="tenant-lab-1",
+                workloads=[
+                    {
+                        "role": "browser-guard",
+                        "instance_id": "browser-1",
+                        "boot_id": "boot-1",
+                        "boot_generation": 1,
+                        "boot_history": ["boot-1"],
+                        "cert_fingerprint": None,
+                        "pid": None,
+                        "starttime": None,
+                        "channel_public": None,
+                    }
+                ],
+            ),
+        )
+
+    def test_first_pid_bind_advances(self) -> None:
+        """An empty row that gets a pid moves from generation 1 to 2."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            self._empty(path)
+            first = bind_process(path, "browser-1", os.getpid())
+            self.assertEqual((first.kind, first.boot_generation), ("bound", 2))
+            again = bind_process(path, "browser-1", os.getpid())
+            self.assertEqual((again.kind, again.boot_generation), ("unchanged", 2))
+
+    def test_first_fingerprint_bind_advances(self) -> None:
+        """An empty row that gets a certificate fingerprint advances."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            self._empty(path)
+            first = bind_process(path, "browser-1", None, "fp-1")
+            self.assertEqual((first.kind, first.boot_generation), ("bound", 2))
+
+    def test_first_channel_key_advances(self) -> None:
+        """An empty channel_public that gets a key advances."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            self._empty(path)
+            first = rebind_channel(path, "browser-1", "1a" * 32)
+            self.assertEqual((first.kind, first.boot_generation), ("bound", 2))
+
+    def test_any_save_path_advances_a_changed_row(self) -> None:
+        """A direct launcher save that fills an identity field also advances."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            self._empty(path)
+            raw = load_registry(path)
+            raw.workloads[0]["channel_public"] = "1a" * 32
+            save_registry(path, raw)
+            row = load_registry(path).find_instance("browser-1")
+            assert row is not None
+            self.assertEqual(row.boot_generation, 2)
 
 
 if __name__ == "__main__":
