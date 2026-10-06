@@ -14,7 +14,7 @@ from typing import Any
 
 from .access import load_access
 from .auth import AuthContext
-from .grants import GrantStore, host_fence_paths
+from .grants import GrantStore, begin_keeper_boot, host_fence_paths, keeper_boot_path
 from .handlers import ServerState, dispatch
 from .rpc import serve
 
@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     registry_path = args.registry or (state_dir / "admission.json")
     grants = None
     policy_dir = None
+    keeper_boot_epoch = 0
     if args.role == "keeper-core":
         if args.policy is None or not args.policy.is_dir():
             print("error: keeper-core requires a policy directory", file=sys.stderr)
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         policy_dir = args.policy
         journal_path, epoch_path = host_fence_paths(authority)
         grants = GrantStore(authority / "grants.json", journal_path, epoch_path)
+        keeper_boot_epoch = begin_keeper_boot(keeper_boot_path(authority))
     expect_server = None
     if args.expect_fingerprint:
         expect_server = {
@@ -88,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         channel_private=channel_private,
         _lock=threading.Lock(),
         peer_instance=args.expect_instance or None,
+        keeper_boot_epoch=keeper_boot_epoch,
     )
 
     def handler(auth: AuthContext, method: str, body: dict[str, Any]) -> dict[str, Any]:

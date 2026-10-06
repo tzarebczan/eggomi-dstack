@@ -57,6 +57,7 @@ class ServerState:
     channel_private: Optional[bytes]
     _lock: threading.Lock
     peer_instance: Optional[str] = None
+    keeper_boot_epoch: int = 0
 
 
 def dispatch(
@@ -96,7 +97,7 @@ def prepare_use(
         policy = load_current(state.policy_dir)
     except (OSError, ValueError, json.JSONDecodeError):
         return rpc_error("denied_payload")
-    prepared = evaluate_prepare(policy, body)
+    prepared = evaluate_prepare(policy, body, auth.identity.instance_id)
     if prepared is None:
         return rpc_error("denied_payload")
     registry = load_registry(state.registry_path)
@@ -132,6 +133,7 @@ def prepare_use(
             field=prepared.field,
             tenant=prepared.tenant,
             fence=prepared.fence,
+            keeper_epoch=state.keeper_boot_epoch,
         )
     except ValueError:
         return rpc_error("denied_payload")
@@ -190,9 +192,12 @@ def resolve_use_grant(
             broker_instance=auth.identity.instance_id,
             field=parsed["field"],
             tenant=parsed["tenant"],
+            keeper_epoch=state.keeper_boot_epoch,
         )
         return rpc_error(str(finished["code"]))
-    audience = preview.get("audience") if isinstance(preview.get("audience"), dict) else {}
+    audience = (
+        preview.get("audience") if isinstance(preview.get("audience"), dict) else {}
+    )
     if auth.identity.channel_public != audience.get("channel_public"):
         return rpc_error("denied_role")
     secret = _fill_secret(state)
@@ -218,6 +223,7 @@ def resolve_use_grant(
         broker_instance=auth.identity.instance_id,
         field=parsed["field"],
         tenant=parsed["tenant"],
+        keeper_epoch=state.keeper_boot_epoch,
     )
     if not result["ok"]:
         return rpc_error(str(result["code"]))
@@ -392,6 +398,7 @@ def _seal_grant(
         navigation_generation=str(grant["destination_binding"]["document_generation"]),
         fence=str(grant.get("fence") or ""),
         epoch=int(lease["epoch"]),
+        keeper_epoch=int(lease["keeper_epoch"]),
         expiry_challenge=challenge,
         expiry_offset_ms=offset,
         requester_instance=str(grant["requester"]["instance_id"]),
@@ -429,9 +436,7 @@ def _fields_ok(body: Dict[str, Any]) -> bool:
     return True
 
 
-def _consumed_grant(
-    state: ServerState, operation_id: str
-) -> Optional[Dict[str, Any]]:
+def _consumed_grant(state: ServerState, operation_id: str) -> Optional[Dict[str, Any]]:
     if state.grants is None:
         return None
     grant = state.grants.find_operation(operation_id)

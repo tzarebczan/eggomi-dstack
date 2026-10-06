@@ -5,8 +5,12 @@ a snapshot of that disk does not revive a consumed grant. A wrapped channel
 key whose epoch does not match the fence is destroyed. A transient read
 error refuses the fill and leaves the wrapped key in place.
 
-Checks and the fill are one step. The guard records ``grant_ref`` before it
-returns the value. A new nonce for that grant does not fill again. A crash
+Checks and the fill are one step, under the fence lock. Unwrapping the
+channel key, the expiry check against the guard clock, opening the seal,
+and the durable record all happen while that lock is held, and
+``advance_epoch`` takes the same lock. A rebind therefore lands either
+before the unwrap (the old key no longer opens) or after the record. The
+guard records ``grant_ref`` before it returns the value. A new nonce for that grant does not fill again. A crash
 between the record and the fill leaves ``unknown``, and that record is never
 followed by a second fill.
 """
@@ -26,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
 
 from .crypto_lab import KeyDestroyed, unwrap_private
+from .grants import fsync_dir
 from .seal import LiveBinding, open_credential
 
 _TERMINAL = frozenset({"filled", "refused", "unknown"})
@@ -70,17 +75,26 @@ class GuardStore:
 
         Callers do this when the channel key is rebound. The previous wrap
         no longer opens. The epoch file is the fence, not a copy inside the
-        guard role directory.
+        guard role directory. It takes the fence lock, so it cannot land
+        between a fill's unwrap and its record.
         """
+        with self._locked():
+            return self._advance_epoch_locked()
+
+    def _advance_epoch_locked(self) -> int:
         self.fence_dir.mkdir(parents=True, exist_ok=True)
         current = 1
         if self.epoch_path.exists():
             current = int(self.epoch_path.read_text(encoding="utf-8").strip())
         nxt = current + 1
         tmp = self.epoch_path.with_suffix(".tmp")
-        tmp.write_text(f"{nxt}\n", encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(f"{nxt}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.epoch_path)
+        fsync_dir(self.fence_dir)
         return nxt
 
     def lookup(self, grant_ref: str) -> Optional[str]:
@@ -103,25 +117,26 @@ class GuardStore:
     ) -> Dict[str, Any]:
         """Re-check every live field, then fill a grant_ref at most once.
 
-        ``now_mono`` defaults to the guard's monotonic clock. A keeper
-        timestamp on the blob is not consulted. A second seal of the same
-        grant, including one with a fresh nonce, returns the recorded
-        outcome and no plaintext.
+        ``now_mono`` defaults to the guard's monotonic clock, read after the
+        fence lock is held. A keeper timestamp on the blob is not consulted.
+        A second seal of the same grant, including one with a fresh nonce,
+        returns the recorded outcome and no plaintext.
         """
-        try:
-            private = self.lease_private()
-        except KeyDestroyed:
-            return {"ok": False, "code": "denied_recipient"}
-        offset = blob.get("expiry_offset_ms")
-        if _expired(live, offset, now_mono if now_mono is not None else time.monotonic()):
-            return {"ok": False, "code": "grant_expired"}
-        try:
-            plaintext = open_credential(private, blob, live)
-        except ValueError:
-            return {"ok": False, "code": "denied_payload"}
-        grant_ref = str(blob.get("grant_ref"))
-        nonce = str(blob.get("nonce"))
         with self._locked():
+            try:
+                private = self.lease_private()
+            except KeyDestroyed:
+                return {"ok": False, "code": "denied_recipient"}
+            offset = blob.get("expiry_offset_ms")
+            now = now_mono if now_mono is not None else time.monotonic()
+            if _expired(live, offset, now):
+                return {"ok": False, "code": "grant_expired"}
+            try:
+                plaintext = open_credential(private, blob, live)
+            except ValueError:
+                return {"ok": False, "code": "denied_payload"}
+            grant_ref = str(blob.get("grant_ref"))
+            nonce = str(blob.get("nonce"))
             recorded = self.lookup(grant_ref)
             if recorded is not None:
                 return {"ok": recorded == "filled", "code": recorded, "repeat": True}
@@ -158,11 +173,14 @@ class GuardStore:
             {"grant_ref": grant_ref, "nonce": nonce, "state": state},
             sort_keys=True,
         )
+        created = not self.journal_path.exists()
         with self.journal_path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(self.journal_path, 0o600)
+        if created:
+            fsync_dir(self.fence_dir)
 
     def _destroy_key(self) -> None:
         if self.wrapped_key_path.exists():

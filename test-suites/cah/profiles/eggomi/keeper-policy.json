@@ -24,6 +24,7 @@
   "operations": {
     "op-positive": {
       "task_id": "task-lab-1",
+      "requester_instance_id": "omi-1",
       "resource_handle": "cred-lab-1",
       "recipient_instance_id": "browser-1",
       "frame_id": "frame-1",
@@ -31,6 +32,7 @@
     },
     "op-copied": {
       "task_id": "task-lab-1",
+      "requester_instance_id": "omi-1",
       "resource_handle": "cred-lab-1",
       "recipient_instance_id": "browser-1",
       "frame_id": "frame-1",
@@ -38,6 +40,7 @@
     },
     "op-boot": {
       "task_id": "task-lab-1",
+      "requester_instance_id": "omi-1",
       "resource_handle": "cred-lab-1",
       "recipient_instance_id": "browser-1",
       "frame_id": "frame-1",

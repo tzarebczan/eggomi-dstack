@@ -42,6 +42,7 @@ class PreparedUse:
     audience_instance: str
     field: str
     fence: str
+    requester_instance_id: str
 
 
 def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
@@ -62,7 +63,11 @@ def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
     payload = json.dumps(document, indent=2, sort_keys=True) + "\n"
     target = directory / f"{revision}.json"
     current_path = directory / "current"
-    current = current_path.read_text(encoding="utf-8").strip() if current_path.exists() else ""
+    current = (
+        current_path.read_text(encoding="utf-8").strip()
+        if current_path.exists()
+        else ""
+    )
     if target.exists() and target.read_text(encoding="utf-8") != payload:
         raise ValueError("keeper policy revision is immutable")
     if target.exists():
@@ -95,14 +100,21 @@ def load_policy(path: Path) -> Dict[str, Any]:
 
 
 def evaluate_prepare(
-    policy: Dict[str, Any], body: Dict[str, Any]
+    policy: Dict[str, Any], body: Dict[str, Any], requester_instance_id: str
 ) -> Optional[PreparedUse]:
-    """Return the keeper binding when ``body`` matches it exactly."""
+    """Return the keeper binding when ``body`` matches it exactly.
+
+    ``requester_instance_id`` is the authenticated caller. The operation must
+    name it, so another admitted requester cannot spend the approval.
+    """
     operation_id = body.get("operation_id")
     if not isinstance(operation_id, str):
         return None
     operation = policy["operations"].get(operation_id)
     if not isinstance(operation, dict):
+        return None
+    owner = operation.get("requester_instance_id")
+    if not isinstance(owner, str) or not owner or owner != requester_instance_id:
         return None
     recipient_id = operation.get("recipient_instance_id")
     handle = operation.get("resource_handle")
@@ -171,6 +183,7 @@ def evaluate_prepare(
         audience_instance=str(expected["audience_instance"]),
         field=str(expected["field"]),
         fence=fence,
+        requester_instance_id=owner,
     )
 
 
@@ -196,6 +209,12 @@ def _validate(raw: Dict[str, Any]) -> None:
             raise ValueError("keeper policy credential is missing")
         if not isinstance(credential.get("field"), str) or not credential["field"]:
             raise ValueError("keeper policy field is missing")
+    for operation in raw["operations"].values():
+        if not isinstance(operation, dict):
+            raise ValueError("keeper policy operation is missing")
+        owner = operation.get("requester_instance_id")
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("keeper policy operation requester is missing")
     for lease in raw["leases"].values():
         if not isinstance(lease, dict):
             raise ValueError("keeper policy lease is missing")

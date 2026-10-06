@@ -513,7 +513,13 @@ def _run_cases(
     )
     token = _write_bootstrap(state)
     _local_bootstrap(
-        state, cases, "bootstrap_wrong_role", "omi-runner", token, "connector", "denied_role"
+        state,
+        cases,
+        "bootstrap_wrong_role",
+        "omi-runner",
+        token,
+        "connector",
+        "denied_role",
     )
     _local_bootstrap(
         state,
@@ -979,7 +985,13 @@ def _wrap_guard_key(state: Path, instance: str, private: bytes) -> None:
     wrapped.write_bytes(wrap_private(secret, 1, private))
     os.chmod(wrapped, 0o600)
     fence_name = "fence-browser-1" if instance == "browser-1" else f"fence-{instance}"
-    lease = {"epoch": 1, "fence": fence_name, "field": "password", "tenant": TENANT}
+    lease = {
+        "epoch": 1,
+        "fence": fence_name,
+        "field": "password",
+        "keeper_epoch": 1,
+        "tenant": TENANT,
+    }
     lease_path = state / "roles" / instance / "lease.json"
     lease_path.write_text(
         json.dumps(lease, indent=2, sort_keys=True) + "\n", encoding="utf-8"
