@@ -23,6 +23,13 @@ trap simulator_stop EXIT INT TERM
 
 simulator_start
 
+# The release tree exists only to produce sdk/simulator/dstack-simulator.
+# Keeping it through `cargo test` fills a GitHub-hosted root disk, and the
+# test build dies with "no space left on device" before any test runs.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    rm -rf "$CORE_DIR/target/release"
+fi
+
 echo "DSTACK_SIMULATOR_ENDPOINT: $DSTACK_SIMULATOR_ENDPOINT"
 echo "TAPPD_SIMULATOR_ENDPOINT: $TAPPD_SIMULATOR_ENDPOINT"
 

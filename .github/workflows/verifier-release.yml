@@ -76,6 +76,7 @@ jobs:
           LATEST_IMAGE_NAME: ghcr.io/dstack-tee/dstack-verifier:latest
           IMAGE_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
           DSTACK_SRC_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          DSTACK_CLONE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           dstack/verifier/builder/build-image.sh \
             "$IMAGE_NAME" \

@@ -56,6 +56,11 @@ SPDX-FileCopyrightText = "Copyright (c) 2024-2025 The Project Contributors"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
+path = ".cursor/environment.json"
+SPDX-FileCopyrightText = "© 2026 Phala Network <dstack@phala.network>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = [
     "dstack/gateway/templates/wg.conf",
     "dstack/guest-agent/templates/metrics.tpl",

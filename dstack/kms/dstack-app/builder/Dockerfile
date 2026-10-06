@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 FROM rust:1.92.0@sha256:48851a839d6a67370c9dbe0e709bedc138e3e404b161c5233aedcf2b717366e4 AS kms-builder
-COPY --from=build-shared /pin-packages.sh /build/
+COPY --from=build-shared /pin-packages.sh /clone-dstack-src.sh /build/
 COPY ./shared/*-pinned-packages.txt /build/
 ARG DSTACK_REV
 ARG DSTACK_SRC_URL=https://github.com/Dstack-TEE/dstack.git
@@ -19,9 +19,9 @@ RUN apt-get update -o APT::Update::Error-Mode=any && \
     libprotobuf-dev \
     clang \
     libclang-dev
-RUN git clone ${DSTACK_SRC_URL} repo && \
-    cd repo && \
-    git checkout ${DSTACK_REV}
+RUN --mount=type=secret,id=github_token,required=false \
+    DSTACK_SRC_URL="${DSTACK_SRC_URL}" DSTACK_REV="${DSTACK_REV}" \
+    bash /build/clone-dstack-src.sh
 RUN rustup target add x86_64-unknown-linux-musl
 RUN cd repo/dstack && cargo build --release --locked -p dstack-kms --target x86_64-unknown-linux-musl
 RUN echo "${DSTACK_REV}" > /build/.GIT_REV

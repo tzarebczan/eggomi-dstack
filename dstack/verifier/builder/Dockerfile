@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 FROM rust:1.92.0-bookworm@sha256:e90e846de4124376164ddfbaab4b0774c7bdeef5e738866295e5a90a34a307a2 AS verifier-builder
-COPY --from=build-shared pin-packages.sh /build/
+COPY --from=build-shared pin-packages.sh clone-dstack-src.sh /build/
 COPY builder/shared/*-pinned-packages.txt /build/
 ARG DSTACK_REV
 ARG DSTACK_SRC_URL=https://github.com/Dstack-TEE/dstack.git
@@ -23,9 +23,9 @@ RUN apt-get update -o APT::Update::Error-Mode=any && \
     ca-certificates \
     curl && \
     rm -rf /var/lib/apt/lists/* /var/log/* /var/cache/ldconfig/aux-cache
-RUN git clone ${DSTACK_SRC_URL} repo && \
-    cd repo && \
-    git checkout ${DSTACK_REV}
+RUN --mount=type=secret,id=github_token,required=false \
+    DSTACK_SRC_URL="${DSTACK_SRC_URL}" DSTACK_REV="${DSTACK_REV}" \
+    bash /build/clone-dstack-src.sh
 RUN rustup target add x86_64-unknown-linux-musl
 RUN cd repo/dstack && cargo build --release --locked -p dstack-verifier --target x86_64-unknown-linux-musl
 RUN echo "${DSTACK_REV}" > /build/.GIT_REV
