@@ -85,6 +85,44 @@ exists:
 
 Every other J id has a null port. The fill report sets `ws_sim_id` to `WS-SIM06`. S0, when launched, is `vm_e2e` and is not labeled E2.
 
+## W0 return packet
+
+Placement, mount, egress, the key inventory, and route gates G0–G5 are pinned
+in [w0-packet.md](w0-packet.md) and
+`test-suites/cah/profiles/eggomi/w0-packet.json`. This slice's evidence is
+E1 / `process_e2e`. It does not claim `vm_e2e`, `confidential_baremetal`, or
+E3.
+
+WS1 evidence classes, in the vendored `experiment.schema.json` order, are
+`analytical`, `discrete_event`, `process_e2e`, `vm_e2e`,
+`confidential_baremetal`, and `disposable_live_provider`.
+
+`agent-handover.md` and `simulation-measurement-contract.md` are named in the
+PR #2 review and are not files in the vendored pin set. The only G-id sentence
+in that set is WS-PERF06: missing supporting hardware evidence blocks a G2/G5
+claim. G0, G1, G3, and G4 therefore have no criterion text here and are
+deferred, not passed. G2 and G5 are deferred for that WS-PERF06 reason: this
+VM has no `/dev/sev`, uid 1000 cannot open `/dev/kvm`, and S0 was not launched.
+
+| Object | Where it lives in a fill run |
+| --- | --- |
+| Lab CA key | `state/authority/certs/ca.key` (mode 0600), mTLS only. Confined processes hide `state/authority`. |
+| Instance keys | `state/authority/certs/<instance>.key` and `state/roles/<instance>/key.pem` (mode 0600), mTLS only. A confined process keeps only its own role directory. |
+| Fill secret | Broker stdin (`cah-synthetic-fill-v1`). Not a key file. Released only into `results/positive_fill.json` and `results/copied_owner_fill.json`. |
+| Grant store | `state/authority/grants.json`, `authority-journal.jsonl`, and `keeper-epoch` (mode 0600). The journal wins over a restored snapshot. |
+| Registry | `state/admission.json`, lock `admission.json.lock`. Confined processes see it read-only. |
+
+| Gate | Status |
+| --- | --- |
+| G0 | Deferred. Criterion text is not in the vendored contracts. |
+| G1 | Deferred. Criterion text is not in the vendored contracts. |
+| G2 | Deferred. WS-PERF06 blocks a G2 claim without hardware evidence. Not `vm_e2e`. |
+| G3 | Deferred. Criterion text is not in the vendored contracts. |
+| G4 | Deferred. Criterion text is not in the vendored contracts. |
+| G5 | Deferred. WS-PERF06 blocks a G5 claim without hardware evidence. Not `confidential_baremetal`. |
+
+No gate in this packet is passed. The host-native fill remains `process_e2e`.
+
 ## Gaps recorded for the next checkout
 
 SPIRE is deferred (W2). Nested smolvm, guest injection of these stubs, real

@@ -1,0 +1,117 @@
+{
+  "schema_version": "cah-w0-packet/v1",
+  "scope": "CAH W0 host-native Eggomi profile",
+  "this_slice_evidence": "process_e2e",
+  "evidence_level_alias": "E1",
+  "not_claimed": [
+    "vm_e2e",
+    "confidential_baremetal",
+    "E3"
+  ],
+  "passed_gate_ids": [],
+  "ws1_zip_sha256": "f3da0ddc62b6ad94711a045bf9fffd96a618857268cd2d7ff8f43ca6be05413c",
+  "criterion_source": "Vendored contracts/ws1/acceptance.json WS-PERF06 is the only G-id sentence in the pinned WS1 r1 set: missing supporting hardware evidence blocks a G2/G5 claim. agent-handover.md and simulation-measurement-contract.md are named in the PR review and are not in the vendored pin set, so G0, G1, G3, and G4 have no criterion text in this tree.",
+  "evidence_vocabulary": [
+    "analytical",
+    "discrete_event",
+    "process_e2e",
+    "vm_e2e",
+    "confidential_baremetal",
+    "disposable_live_provider"
+  ],
+  "placement": {
+    "current": "Host-native processes on the launcher host. The fill demo does not enter the S0 guest. CAH_MODE=outer runs S0 and exits without injecting these stubs.",
+    "simulator_owner": "test-suites/eggomi owns the outer simulated-SNP substrate. CAH does not start a second simulator.",
+    "proposed_eggomi_neighbor": "Coordinator-described infra/dstack layout. Not inspected. No Eggomi commit SHA was read.",
+    "eggomi_predecessor_sha": null
+  },
+  "mount": {
+    "keeper": "Unconfined. Owns state/authority, including the lab CA key, keeper policy, grant store, and journal.",
+    "other_processes": "User and mount namespace. Hides state/authority and state/roles, bind-mounts only that process's role directory, and remounts admission.json read-only.",
+    "same_uid_ptrace": "Not additionally blocked. This is an E1 limit."
+  },
+  "egress": {
+    "host_network": "Unrestricted on this host-native slice. WS-NET01 is not claimed.",
+    "broker_vsock_label": "vsock:3:5200",
+    "af_vsock": "Not opened. open_vsock raises VsockUnavailable. The label is a local byte forwarder.",
+    "proposed": "Egress allowlists stay on the Eggomi egress role. The stub broker does not implement them."
+  },
+  "key_inventory": [
+    {
+      "id": "lab_ca_key",
+      "path": "state/authority/certs/ca.key",
+      "mode": "0600",
+      "when": "CAH_TRANSPORT=mtls",
+      "readers": "Keeper. Confined processes hide state/authority.",
+      "notes": "One-day lab CA. Public certificate is copied to state/public/ca.crt. Unix transport does not create this key. SPIRE is not started."
+    },
+    {
+      "id": "instance_keys",
+      "path": "state/authority/certs/<instance>.key",
+      "exported_path": "state/roles/<instance>/key.pem",
+      "mode": "0600",
+      "when": "CAH_TRANSPORT=mtls",
+      "readers": "That instance's confined mount keeps only its own role directory. Other instance keys stay under the hidden authority directory.",
+      "notes": "Unix transport does not issue instance keys. Possession on unix is pid plus /proc/<pid>/stat start time."
+    },
+    {
+      "id": "fill_secret",
+      "path": null,
+      "mode": null,
+      "when": "every fill run",
+      "readers": "Credential-broker process memory, from stdin. Released only by a successful CompleteFill.",
+      "notes": "Lab canary cah-synthetic-fill-v1. It is not a key file. The only result files that may contain it are results/positive_fill.json and results/copied_owner_fill.json."
+    },
+    {
+      "id": "grant_store",
+      "path": "state/authority/grants.json",
+      "journal_path": "state/authority/authority-journal.jsonl",
+      "epoch_path": "state/authority/keeper-epoch",
+      "mode": "0600",
+      "when": "every fill run",
+      "readers": "Keeper. Confined processes hide state/authority.",
+      "notes": "Consumption and boot revocation are appended to the journal. Restoring an older grants.json does not revive a journaled grant."
+    },
+    {
+      "id": "registry",
+      "path": "state/admission.json",
+      "lock_path": "state/admission.json.lock",
+      "mode": "0600",
+      "when": "every fill run",
+      "readers": "Launcher and keeper write it under the lock. Confined processes see a read-only bind.",
+      "notes": "AdmitWorkload may append one scoped row. A certificate-fingerprint change advances boot_generation and the caller revokes that instance's issued grants."
+    }
+  ],
+  "gates": [
+    {
+      "id": "G0",
+      "status": "deferred",
+      "reason": "Criterion text is not in the vendored WS1 r1 contracts."
+    },
+    {
+      "id": "G1",
+      "status": "deferred",
+      "reason": "Criterion text is not in the vendored WS1 r1 contracts."
+    },
+    {
+      "id": "G2",
+      "status": "deferred",
+      "reason": "WS-PERF06: missing supporting hardware evidence blocks a G2 claim. This VM has no /dev/sev, uid 1000 cannot open /dev/kvm, and S0 was not launched. Not vm_e2e and not an AMD SNP host claim."
+    },
+    {
+      "id": "G3",
+      "status": "deferred",
+      "reason": "Criterion text is not in the vendored WS1 r1 contracts."
+    },
+    {
+      "id": "G4",
+      "status": "deferred",
+      "reason": "Criterion text is not in the vendored WS1 r1 contracts."
+    },
+    {
+      "id": "G5",
+      "status": "deferred",
+      "reason": "WS-PERF06: missing supporting hardware evidence blocks a G5 claim. Fill evidence is E1 / process_e2e, not confidential_baremetal."
+    }
+  ]
+}

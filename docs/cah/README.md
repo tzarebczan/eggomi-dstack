@@ -28,9 +28,11 @@ resolve that grant, then releases one synthetic fill to the bound
 `browser-guard`. An `omi-runner` call to the broker is `denied_role` on the
 access graph and does not inspect the grant. A second admitted browser that
 presents the same `grant_ref` is `denied_recipient` at resolve. Those are
-different checks. A boot id only advances, and a generation mismatch is
-`revoked_boot`. An unadmitted certificate and a connector with no allow edge
-are refused. Role, instance, and frame mismatches leave the grant issued. A
+different checks. A boot id only advances. A pid rebind and a certificate
+fingerprint change both advance `boot_generation` and revoke that instance's
+issued grants. A generation mismatch is `revoked_boot`. An unadmitted
+certificate and a connector with no allow edge are refused. Role, instance,
+and frame mismatches leave the grant issued. A
 second redeem of a consumed grant returns `grant_consumed`.
 
 The authority rules, including why `get_secret` and keeper
@@ -107,6 +109,9 @@ are pinned and not yet the wire format.
 
 SPIRE, real `AF_VSOCK`, nested smolvm, injecting stubs into the S0 guest,
 wiring Eggomi application code, an E3 hardware run, and a full migration onto
-`eggomi_*` metric names are deferred. The WS1 revision 1 contract zip is
-pinned in the [integration manifest](integration-manifest.md). J01–J14 stay
-retired journey ids.
+`eggomi_*` metric names are deferred. Route gates G2 and G5 stay deferred:
+vendored WS-PERF06 says missing hardware evidence blocks those claims, and
+this slice is E1 / `process_e2e`. G0, G1, G3, and G4 have no criterion text
+in the vendored contracts, so they are deferred rather than marked passed.
+Placement, mount, egress, the key inventory, and gates G0–G5 are pinned in
+the [W0 packet](w0-packet.md). J01–J14 stay retired journey ids.

@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[3]
 PINS = ROOT / "profiles" / "eggomi" / "ws1-pins.json"
+PACKET = ROOT / "profiles" / "eggomi" / "w0-packet.json"
 ZIP_SHA256 = "f3da0ddc62b6ad94711a045bf9fffd96a618857268cd2d7ff8f43ca6be05413c"
 EXPECTED = {
     "contracts/ws1/service-access.json": (
@@ -47,6 +49,63 @@ class PinTests(unittest.TestCase):
         for name, digest in EXPECTED.items():
             data = (ROOT / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
+
+    def test_w0_packet_pins_inventory_and_defers_gates(self) -> None:
+        """Inventory and G0–G5 are pinned, and no gate is marked passed."""
+        packet = json.loads(PACKET.read_text(encoding="utf-8"))
+        self.assertEqual(packet["schema_version"], "cah-w0-packet/v1")
+        self.assertEqual(packet["this_slice_evidence"], "process_e2e")
+        self.assertEqual(packet["evidence_level_alias"], "E1")
+        self.assertEqual(packet["passed_gate_ids"], [])
+        self.assertEqual(packet["ws1_zip_sha256"], ZIP_SHA256)
+        self.assertEqual(
+            packet["not_claimed"],
+            ["vm_e2e", "confidential_baremetal", "E3"],
+        )
+        self.assertEqual(
+            [row["id"] for row in packet["key_inventory"]],
+            [
+                "lab_ca_key",
+                "instance_keys",
+                "fill_secret",
+                "grant_store",
+                "registry",
+            ],
+        )
+        self.assertEqual(
+            [row["id"] for row in packet["gates"]],
+            ["G0", "G1", "G2", "G3", "G4", "G5"],
+        )
+        for gate in packet["gates"]:
+            self.assertEqual(gate["status"], "deferred")
+        reasons = {gate["id"]: gate["reason"] for gate in packet["gates"]}
+        self.assertIn("WS-PERF06", reasons["G2"])
+        self.assertIn("WS-PERF06", reasons["G5"])
+        self.assertIn("not in the vendored", reasons["G0"])
+        schema = json.loads(
+            (ROOT / "contracts/ws1/experiment.schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            schema["properties"]["evidence_level"]["enum"],
+            packet["evidence_vocabulary"],
+        )
+        acceptance = (ROOT / "contracts/ws1/acceptance.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "Missing supporting hardware evidence blocks G2/G5 claim.",
+            acceptance,
+        )
+        note = (REPO / "docs/cah/authority-model.md").read_text(encoding="utf-8")
+        self.assertNotIn("cert-only rebind is still", note)
+        self.assertNotIn("partly met", note)
+        self.assertIn("whether or not the row already has a pid", note)
+        manifest = (REPO / "docs/cah/integration-manifest.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("w0-packet.json", manifest)
+        for gate_id in ("G0", "G1", "G2", "G3", "G4", "G5"):
+            self.assertIn(gate_id, manifest)
 
 
 if __name__ == "__main__":

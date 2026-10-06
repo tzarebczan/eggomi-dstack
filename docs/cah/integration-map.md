@@ -17,9 +17,12 @@ exists. This is a token-scope gap, not a missing repo. Treat the Eggomi
 column as a coordinator description until a checkout records real SHAs.
 
 Evidence: E0 is a model, E1 is real processes with fakes, E3 is TEE hardware.
-WS1 calls the host-native class `process_e2e` and a simulated-SNP boot
-`vm_e2e`. This slice is E1 / `process_e2e`. Deployment class is L (lab).
-`vm_e2e` is not a confidential-hardware claim.
+WS1 classes, in vendored `experiment.schema.json` order, are `analytical`,
+`discrete_event`, `process_e2e`, `vm_e2e`, `confidential_baremetal`, and
+`disposable_live_provider`. This slice is E1 / `process_e2e`. Deployment
+class is L (lab). `vm_e2e` is not a confidential-hardware claim. Placement,
+mount, egress, key inventory, and gates G0–G5 are in the
+[W0 packet](w0-packet.md). None of those gates is passed.
 
 | Role | This repo | Eggomi path (unverified) | Evidence | Owner | Gap |
 | --- | --- | --- | --- | --- | --- |
