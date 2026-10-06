@@ -52,8 +52,10 @@ fingerprint does not skip that check.
 An `omi-runner` request to the broker is `denied_role` on the access graph.
 That is not the copied-grant check. A second admitted `browser-guard` that
 presents the same reference is `denied_recipient` at resolve, and the grant
-stays `issued` for the bound recipient. A boot-generation mismatch is
-terminal `revoked_boot`.
+stays `issued` for the bound recipient. A certificate-fingerprint change is
+a rebind, with or without a pid: `boot_generation` advances and that
+instance's issued grants are revoked. Binding the previous fingerprint again
+does not restore them. A boot-generation mismatch is terminal `revoked_boot`.
 
 ## Limits of this profile
 

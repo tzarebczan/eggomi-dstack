@@ -44,14 +44,15 @@ A second admitted `browser-guard` that presents a copied `grant_ref` is
 recipient. An `omi-runner` call to the broker is a different check: the
 access graph returns `denied_role` before the grant is examined.
 
-Rebinding a pid or start time advances `boot_generation` and revokes that
-instance's issued grants. Replacing a fingerprint does the same when the row
-already has a pid or start time. Replacing only `cert_fingerprint` while pid
-and start time are still empty does not advance the generation, and issued
-grants for that instance are not revoked. That cert-only rebind is still
-open. `set_boot` accepts only a boot id that is not already in
+Rebinding a pid, a start time, or a certificate fingerprint advances
+`boot_generation` and revokes that instance's issued grants. A fingerprint
+change is a rebind whether or not the row already has a pid. The first bind,
+which records a fingerprint or a pid on a row that has neither, does not
+advance the generation. Repeating the same fingerprint on that empty row does
+not either. `set_boot` accepts only a boot id that is not already in
 `boot_history`. Repeating an older id raises `BootRollback`. A generation
-mismatch on resolve is terminal `revoked_boot`.
+mismatch on resolve is terminal `revoked_boot`. Returning to an earlier
+fingerprint does not revive a grant that the rebind revoked.
 
 `CompleteFill` sends `frame_id` and `navigation_generation`. Keeper compares
 them to `destination_binding`. A mismatch is `denied_payload` and does not

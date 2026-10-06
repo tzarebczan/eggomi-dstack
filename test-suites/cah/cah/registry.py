@@ -4,10 +4,9 @@ The launcher creates rows. keeper-core may append a scoped bootstrap row.
 Peer identity is the row recorded for a pid plus start time, or for a
 certificate fingerprint. A self-declared role in an RPC body is not consulted.
 
-Boot generations only advance. Rebinding a pid or start time mints a new
-generation. Replacing a fingerprint does too when the row already has a pid
-or start time. Replacing only the fingerprint while pid and start time are
-empty does not. An older boot id is refused.
+Boot generations only advance. Rebinding a pid, a start time, or a
+certificate fingerprint mints a new generation. A fingerprint change is a
+rebind whether or not the row has a pid. An older boot id is refused.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -166,12 +165,11 @@ def bind_process(
 ) -> BindResult:
     """Attach a live pid, and optionally a certificate, to an instance.
 
-    The first process bind records the pid and start time and does not
-    advance ``boot_generation``. A later bind with a different pid, start
-    time, or fingerprint does. Replacing only the fingerprint while pid and
-    start time are still empty is treated as that first bind and does not
-    advance the generation. Callers revoke outstanding grants when the result
-    kind is ``rebound``.
+    The first bind records a pid or a fingerprint on a row that has neither
+    and does not advance ``boot_generation``. A later bind with a different
+    pid, start time, or certificate fingerprint does. A fingerprint change
+    is a rebind even when pid and start time are still empty. Callers revoke
+    outstanding grants when the result kind is ``rebound``.
     """
     starttime = process_starttime(pid) if pid is not None else None
 
@@ -193,7 +191,17 @@ def bind_process(
                 return BindResult(
                     "unchanged", instance_id, _generation(row.get("boot_generation"))
                 )
-            fresh = current_pid is None and current_start is None
+            fingerprint_changed = (
+                isinstance(current_fp, str)
+                and bool(current_fp)
+                and fingerprint is not None
+                and fingerprint != current_fp
+            )
+            fresh = (
+                current_pid is None
+                and current_start is None
+                and not fingerprint_changed
+            )
             if not fresh:
                 row["boot_generation"] = _generation(row.get("boot_generation")) + 1
             row["pid"] = pid
