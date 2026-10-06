@@ -33,6 +33,10 @@ env:
   DSTACK_REV: ${{ github.event.pull_request.head.sha || github.sha }}
   DSTACK_SRC_URL: ${{ github.event.pull_request.head.repo.clone_url || format('{0}/{1}', github.server_url, github.repository) }}
 
+# The Dockerfiles clone DSTACK_SRC_URL. A private fork cannot do that
+# anonymously (git exits 128). Each build mounts GITHUB_TOKEN as the BuildKit
+# secret `github_token`. It is not a build-arg and is not written into the image.
+
 # Builds go through the `docker` driver, i.e. the daemon's own BuildKit, rather
 # than the `docker-container` builder setup-buildx creates by default. With a
 # container builder every `--load` compresses the result into a tarball and
@@ -75,6 +79,10 @@ jobs:
           provenance: false
           build-contexts: |
             build-shared=dstack/build/shared
+          # Anonymous clone of this private fork exits 128. The token is a
+          # BuildKit secret, not a build-arg, so it is not stored in the image.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           build-args: |
             DSTACK_REV=${{ env.DSTACK_REV }}
             DSTACK_SRC_URL=${{ env.DSTACK_SRC_URL }}
@@ -85,12 +93,15 @@ jobs:
             dstack/gateway/dstack-app/builder/shared/pinned-packages.txt
 
       - name: Build gateway-builder target
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker buildx build \
             --load \
             --target gateway-builder \
             --tag gateway-builder-check:latest \
             --provenance=false \
+            --secret id=github_token,env=GITHUB_TOKEN \
             --build-context build-shared=dstack/build/shared \
             --build-arg "DSTACK_REV=${DSTACK_REV}" \
             --build-arg "DSTACK_SRC_URL=${DSTACK_SRC_URL}" \
@@ -128,6 +139,8 @@ jobs:
           provenance: false
           build-contexts: |
             build-shared=dstack/build/shared
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           build-args: |
             DSTACK_REV=${{ env.DSTACK_REV }}
             DSTACK_SRC_URL=${{ env.DSTACK_SRC_URL }}
@@ -138,12 +151,15 @@ jobs:
             dstack/kms/dstack-app/builder/shared/pinned-packages.txt
 
       - name: Build kms-builder target
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker buildx build \
             --load \
             --target kms-builder \
             --tag kms-builder-check:latest \
             --provenance=false \
+            --secret id=github_token,env=GITHUB_TOKEN \
             --build-context build-shared=dstack/build/shared \
             --build-arg "DSTACK_REV=${DSTACK_REV}" \
             --build-arg "DSTACK_SRC_URL=${DSTACK_SRC_URL}" \
@@ -183,6 +199,8 @@ jobs:
           provenance: false
           build-contexts: |
             build-shared=dstack/build/shared
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           build-args: |
             DSTACK_REV=${{ env.DSTACK_REV }}
             DSTACK_SRC_URL=${{ env.DSTACK_SRC_URL }}
@@ -193,12 +211,15 @@ jobs:
             dstack/verifier/builder/shared/pinned-packages.txt
 
       - name: Build verifier-builder target
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker buildx build \
             --load \
             --target verifier-builder \
             --tag verifier-builder-check:latest \
             --provenance=false \
+            --secret id=github_token,env=GITHUB_TOKEN \
             --file dstack/verifier/builder/Dockerfile \
             --build-context build-shared=dstack/build/shared \
             --build-arg "DSTACK_REV=${DSTACK_REV}" \

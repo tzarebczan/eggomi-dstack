@@ -204,6 +204,16 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(builds, [])
         self.assertEqual(pins.read_text(), "package=2\n")
 
+    def test_clone_token_is_a_secret_not_a_build_arg(self):
+        """A private-mirror token is forwarded as a BuildKit secret."""
+        result, builds = self.run_build(DSTACK_CLONE_TOKEN="super-secret-token")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(len(builds), 1)
+        for build in builds:
+            rendered = " ".join(build)
+            self.assertIn("id=github_token,env=DSTACK_CLONE_TOKEN", rendered)
+            self.assertNotIn("super-secret-token", rendered)
+
     def test_metadata_only_uses_oci_image_exporter(self):
         """Requesting metadata alone never reports a Docker schema manifest."""
         result, builds = self.run_build(METADATA_FILE=str(self.metadata))
