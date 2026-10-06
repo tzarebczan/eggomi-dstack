@@ -29,6 +29,7 @@ from .confine import popen_confined
 from .crypto_lab import generate_private, public_key, wrap_private
 from .grants import host_fence_paths, revoke_instance_grants
 from .guard import GuardStore
+from .launcher import LauncherSigner, launcher_dir
 from .metrics import load_schema, measurement, sum_present, validate_record
 from .policy import load_policy, publish_revision
 from .registry import (
@@ -741,6 +742,8 @@ def _start_server(
         "cah.serve",
         "--role",
         role,
+        "--launcher-public",
+        _launcher_public(state),
         "--state",
         str(state),
         "--transport",
@@ -832,6 +835,7 @@ def _spawn(
     return popen_confined(
         cmd,
         hide_dirs=[
+            launcher_dir(state / "admission.json"),
             state / "authority",
             state / "roles",
             state / "fence",
@@ -865,6 +869,8 @@ def _client_cmd(
         sys.executable,
         "-m",
         "cah.client",
+        "--launcher-public",
+        _launcher_public(state),
         "--state",
         str(state),
         "--case",
@@ -1145,6 +1151,11 @@ def _write_registry(
             trust_domain=TRUST_DOMAIN, tenant=TENANT, workloads=workloads
         ),
     )
+
+
+def _launcher_public(state: Path) -> str:
+    """Return the launcher row key every compartment is configured with."""
+    return LauncherSigner.at(launcher_dir(state / "admission.json")).public.hex()
 
 
 def _write_bootstrap(state: Path) -> str:

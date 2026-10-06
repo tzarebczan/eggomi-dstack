@@ -82,14 +82,16 @@ contains `ignored-cn-browser-1` and the report field `cn_ignored` is true.
 ./test-suites/cah/scripts/run-tests.sh
 ```
 
-Requires Python 3.12 and `PYTHONPATH=test-suites/cah` (the script sets that).
+Requires Python 3.12, the `cryptography` package
+(`pip install -r test-suites/cah/requirements.txt`), and
+`PYTHONPATH=test-suites/cah` (the script sets that).
 Ruff, when installed, is `ruff==0.11.4` with select `E,F,I,D` and ignore
 `D203,D213,E501`.
 
 ## Layout
 
 ```text
-cah/            Python package (stdlib only)
+cah/            Python package (stdlib plus `cryptography`)
 profiles/eggomi service-access, graph, fill fixture, J-id aliases
 examples/       workload-use-grant and harness-local experiment record
 schemas/        pinned resource-measurement/v1 schema

@@ -10,6 +10,10 @@ Boot generations only advance. Rebinding a pid, a start time, a
 certificate fingerprint, or a channel public key mints a new generation. A
 fingerprint change is a rebind whether or not the row has a pid. Returning
 to an earlier channel key is another rebind. An older boot id is refused.
+
+Every row the launcher saves carries ``launcher_sig`` (``launcher.py``). A
+reader only returns rows whose signature verifies under a launcher key this
+process trusts. An unsigned or badly signed row is no identity.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -25,6 +29,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
+
+from .launcher import LauncherSigner, launcher_dir, row_attributed
 
 
 class BootRollback(ValueError):
@@ -72,13 +78,26 @@ class AdmissionRegistry:
     tenant: str
     workloads: List[Dict[str, object]]
 
+    def attributed(self) -> List[Dict[str, object]]:
+        """Return the rows whose ``launcher_sig`` verifies.
+
+        Lookups only see these rows. The raw ``workloads`` list is the
+        launcher's own view, used when it rewrites the file.
+        """
+        return [
+            row
+            for row in self.workloads
+            if isinstance(row, dict)
+            and row_attributed(self.trust_domain, self.tenant, row)
+        ]
+
     def find_pid(self, pid: int) -> Optional[WorkloadIdentity]:
         """Return the workload bound to this pid and its current start time.
 
         A recycled pid with a different ``/proc/<pid>/stat`` start time does
         not inherit the old row.
         """
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("pid") != pid:
                 continue
             stored = row.get("starttime")
@@ -97,7 +116,7 @@ class AdmissionRegistry:
         """Return the workload bound to this registered channel key."""
         if not public_hex:
             return None
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("channel_public") == public_hex:
                 return self._identity(row)
         return None
@@ -106,14 +125,14 @@ class AdmissionRegistry:
         """Return the workload bound to a certificate fingerprint."""
         if not fingerprint:
             return None
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("cert_fingerprint") == fingerprint:
                 return self._identity(row)
         return None
 
     def find_instance(self, instance_id: str) -> Optional[WorkloadIdentity]:
         """Return the admitted instance, even when no process is bound."""
-        for row in self.workloads:
+        for row in self.attributed():
             if row.get("instance_id") == instance_id:
                 return self._identity(row)
         return None
@@ -292,13 +311,22 @@ def set_boot(path: Path, instance_id: str, boot_id: str) -> int:
     return _mutate(path, mutate)
 
 
-def save_registry(path: Path, registry: AdmissionRegistry) -> None:
-    """Atomically replace the registry file.
+def save_registry(
+    path: Path,
+    registry: AdmissionRegistry,
+    signer: Optional[LauncherSigner] = None,
+) -> None:
+    """Sign every row and atomically replace the registry file.
 
-    A channel public key that changes from one non-empty value to another
-    advances ``boot_generation`` when the caller has not already done so.
+    Only the launcher calls this. ``signer`` defaults to the launcher key in
+    ``launcher_dir(path)``. A malformed row raises ``RowNotSignable`` and
+    nothing is written. A channel public key that changes from one non-empty
+    value to another advances ``boot_generation`` when the caller has not
+    already done so.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if signer is None:
+        signer = LauncherSigner.at(launcher_dir(path))
     _advance_changed_channels(path, registry)
     for row in registry.workloads:
         if "boot_generation" not in row:
@@ -307,6 +335,8 @@ def save_registry(path: Path, registry: AdmissionRegistry) -> None:
             row["boot_history"] = [row["boot_id"]]
         if "starttime" not in row:
             row["starttime"] = None
+    for row in registry.workloads:
+        row["launcher_sig"] = signer.sign_row(registry.trust_domain, registry.tenant, row)
     payload = {
         "schema_version": "admission-registry/v1",
         "trust_domain": registry.trust_domain,

@@ -16,6 +16,7 @@ from .access import load_access
 from .auth import AuthContext
 from .grants import GrantStore, begin_keeper_boot, host_fence_paths, keeper_boot_path
 from .handlers import ServerState, dispatch
+from .launcher import parse_public, trust_launcher_key
 from .rpc import serve
 
 
@@ -42,9 +43,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-role", default="")
     parser.add_argument("--expect-instance", default="")
     parser.add_argument("--expect-fingerprint", default="")
+    parser.add_argument(
+        "--launcher-public",
+        required=True,
+        help="the launcher's Ed25519 row key, 64 hex characters",
+    )
     args = parser.parse_args(argv)
     try:
         channel_private = _read_channel_key(args.channel_key)
+        trust_launcher_key(parse_public(args.launcher_public))
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
