@@ -1,0 +1,39 @@
+{
+  "schema_version": "service-access/v1",
+  "profile": "eggomi",
+  "default": "deny",
+  "bootstrap": {
+    "callee": "keeper-core",
+    "method": "AdmitWorkload",
+    "caller_role": "platform-launcher",
+    "one_use": true,
+    "scope": "launcher admits the one instance named in the pending scope file"
+  },
+  "allow": [
+    {
+      "caller_role": "platform-launcher",
+      "callee": "keeper-core",
+      "method": "AdmitWorkload"
+    },
+    {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "PrepareUse"
+    },
+    {
+      "caller_role": "credential-broker",
+      "callee": "keeper-core",
+      "method": "ResolveUseGrant"
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "credential-broker",
+      "method": "CompleteFill"
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "keeper-core",
+      "method": "ReportOutcome"
+    }
+  ]
+}

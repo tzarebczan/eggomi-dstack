@@ -272,3 +272,11 @@ SPDX-License-Identifier = "CC0-1.0"
 path = "dstack/crates/qemu-acpi/fixtures/*.bin"
 SPDX-FileCopyrightText = "NONE"
 SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+path = [
+    "test-suites/cah/**/*.json",
+    "test-suites/cah/schemas/measurement.schema.json",
+]
+SPDX-FileCopyrightText = "Copyright (c) 2026 Phala Network <dstack@phala.network>"
+SPDX-License-Identifier = "Apache-2.0"

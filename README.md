@@ -77,6 +77,8 @@ Developing without TEE hardware? Use a development image with
 [no-TEE mode and swtpm](./docs/development-without-tee.md).
 For Eggomi's AMD path, follow the
 [simulated SEV-SNP guide](./docs/eggomi/development-with-simulated-snp.md).
+The confidential-agent harness on that path is documented in
+[docs/cah](./docs/cah/README.md).
 
 ## Architecture
 

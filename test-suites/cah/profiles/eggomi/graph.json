@@ -1,0 +1,15 @@
+{
+  "schema_version": "cah-compartment-graph/v1",
+  "profile": "eggomi",
+  "deployment_class": "L",
+  "note": "Logical roles for the Eggomi profile. This is not a second compose product and not a claim that each role is its own VM.",
+  "compartments": [
+    {"role": "keeper-core", "kind": "server", "instance_id": "keeper-1", "boot_id": "boot-keeper-1"},
+    {"role": "credential-broker", "kind": "server", "instance_id": "broker-1", "boot_id": "boot-broker-1"},
+    {"role": "connector", "kind": "server", "instance_id": "connector-1", "boot_id": "boot-connector-1"},
+    {"role": "browser-guard", "kind": "client", "instance_id": "browser-1", "boot_id": "boot-browser-1"},
+    {"role": "omi-runner", "kind": "client", "instance_id": "omi-1", "boot_id": "boot-omi-1"},
+    {"role": "platform-launcher", "kind": "client", "instance_id": "launcher-1", "boot_id": "boot-launcher-1"}
+  ],
+  "not_started": ["data-service", "matrix-device", "workbench", "workload-issuer", "telemetry-agent"]
+}

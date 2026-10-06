@@ -1,0 +1,11 @@
+{
+  "origin": "https://lab.invalid/signin",
+  "resource_handle": "cred-lab-1",
+  "policy_revision": "pol-lab-1",
+  "task_id": "task-lab-1",
+  "lease_id": "lease-lab-1",
+  "lease_epoch": 1,
+  "frame_id": "frame-1",
+  "navigation_generation": "nav-1",
+  "recipient_instance_id": "browser-1"
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": "cah-scenario-aliases/v1",
+  "authoritative_catalog": "WS-SIM01-WS-SIM18",
+  "catalog_pin": null,
+  "catalog_pin_reason": "WS1 revision 1 contracts were described by the coordinator and the zip was not attached. Scenario names were not invented. J01-J14 are retired aliases and are not a second scheduler.",
+  "runner": "test-suites/eggomi outer substrate plus test-suites/cah compartment ports. One harness.",
+  "retired_journeys": [
+    {"id": "J01", "name": "Idle connected account", "harness_port": null},
+    {"id": "J02", "name": "DM and group burst", "harness_port": null},
+    {"id": "J03", "name": "Morning catch-up and archive search", "harness_port": null},
+    {"id": "J04", "name": "Omi read and draft", "harness_port": null},
+    {"id": "J05", "name": "Approved provider action", "harness_port": null},
+    {"id": "J06", "name": "Browser sign-in and read", "harness_port": "fill-v1"},
+    {"id": "J07", "name": "Browser upload/action", "harness_port": null},
+    {"id": "J08", "name": "Workbench and CLI task", "harness_port": null},
+    {"id": "J09", "name": "Keeper unavailable", "harness_port": null},
+    {"id": "J10", "name": "Reconnect and refresh storm", "harness_port": null},
+    {"id": "J11", "name": "Reflection, indexing and restore", "harness_port": null},
+    {"id": "J12", "name": "Malicious tenant and noisy neighbor", "harness_port": null},
+    {"id": "J13", "name": "Rolling release and issuer rotation", "harness_port": "s6-faults"},
+    {"id": "J14", "name": "Pristine branch and teardown", "harness_port": "s1-persistence"}
+  ]
+}

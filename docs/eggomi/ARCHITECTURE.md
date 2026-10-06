@@ -95,6 +95,11 @@ dstack deploy \
 See [Develop Eggomi with simulated AMD SEV-SNP](development-with-simulated-snp.md)
 and the [Eggomi harness](../../test-suites/eggomi/README.md).
 
+Compartment stubs for the confidential-agent harness sit on that substrate.
+Eggomi is the first profile. The host-native fill, integration manifest, and
+role map are in [docs/cah](../cah/README.md). S0, S1, and S6 remain the outer
+simulated-SNP checks.
+
 ## SubVM roles
 
 These boundaries are product assumptions to test, not final interfaces.
