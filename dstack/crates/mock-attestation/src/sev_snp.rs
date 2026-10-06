@@ -188,4 +188,15 @@ mod tests {
             .verify(&evidence.report, &evidence.cert_chain, &[0x24; 64])
             .is_err());
     }
+
+    #[test]
+    fn generated_report_is_rejected_by_production_arks() {
+        let generator = SevSnpGenerator::from_seed([0x11; 32]).unwrap();
+        let report_data = [0x43; 64];
+        let evidence = generator.attest(report_data).unwrap();
+        let verifier = sev_snp_qvl::QuoteVerifier::new_prod();
+        assert!(verifier
+            .verify(&evidence.report, &evidence.cert_chain, &report_data)
+            .is_err());
+    }
 }
