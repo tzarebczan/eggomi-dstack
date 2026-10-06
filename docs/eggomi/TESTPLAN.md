@@ -62,9 +62,23 @@ chain, refuses release while the gate is off, releases one key only when
 `MEASUREMENT` and `report_data` match, and refuses that output at
 `QuoteVerifier::new_prod`. See
 [simulated-snp-kms.md](simulated-snp-kms.md). The production `dstack-kms`
-binary, its key derivation, and Phala TDX are unchanged. Wiring this policy
-into a long-running KMS process with mock collateral endpoints is still
-deferred.
+binary, its key derivation, and Phala TDX are unchanged.
+
+`test-suites/eggomi/scripts/s2-kms.sh` runs the same policy as a long-running
+`snp-sim-kms serve` process that a simulated-SNP CVM calls. The guest quotes
+`app_release_report_data(app_id, nonce)` through the guest agent and posts the
+evidence to the KMS. The KMS fetches the VCEK chain from the mock AMD-KDS
+endpoint and enrolls the MEASUREMENT recomputed from the VM's `vm_config`. S2
+requires these outcomes:
+
+- release is refused while the gate is off;
+- a matching release succeeds, and its signature verifies under the KMS root
+  key attested by the bootstrap quote;
+- a replayed quote under a new nonce, a report_data mismatch, and a
+  MEASUREMENT mismatch are each refused;
+- production AMD roots refuse the evidence the release was decided on.
+
+The [L1 runbook](l1-lab-runbook.md) records the first run.
 
 ### S3: browser and keeper lifecycle
 
@@ -142,5 +156,9 @@ release a key.
 - [x] S1 checks outer encrypted-disk/application-volume and swtpm persistence.
 - [x] S6 exposes measurement-mismatch and production-root rejection hooks.
 - [x] CAH host-native `fill-v1` exercises keeper, broker, and browser-guard stubs (E1).
-- [ ] Run S0/S1 on an L1 host with `/dev/kvm`, swtpm, and a development image.
+- [x] Run S0/S1 on an L1 host with `/dev/kvm`, swtpm, and a development image
+  (2026-10-06; see the [L1 runbook](l1-lab-runbook.md)).
+- [x] S2 against a long-running lab KMS with mock collateral endpoints.
+- [ ] Guest kernel with KVM, so smolvm can run inside the outer CVM. The
+  0.6.0 dev image exposes `svm` but has no `/dev/kvm`.
 - [ ] Implement smolvm S3/S4 and activity S5 in the later milestone.
