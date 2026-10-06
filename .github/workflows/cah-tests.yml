@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The confidential-agent harness compartment suite (test-suites/cah): unit
+# tests, the Eggomi interop vectors, and the host-native fill demo over both
+# transports. The suite needs SO_PEERPIDFD (Linux 6.5+) and unprivileged
+# user plus mount namespaces. The preflight fails the job when either is
+# missing; nothing is skipped silently.
+
+name: CAH compartment tests
+
+on:
+  push:
+    branches: [ next, 'release/**' ]
+    paths:
+      - 'test-suites/cah/**'
+      - '.github/workflows/cah-tests.yml'
+  pull_request:
+    branches: [ next, 'release/**' ]
+    paths:
+      - 'test-suites/cah/**'
+      - '.github/workflows/cah-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cah:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install the suite's dependency
+      run: python -m pip install -r test-suites/cah/requirements.txt
+
+    - name: Allow unprivileged user namespaces
+      # Ubuntu 24.04 restricts them through AppArmor by default. The suite
+      # confines each compartment with `unshare --user --map-root-user --mount`.
+      run: |
+        if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+        if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+        fi
+
+    - name: Preflight (kernel 6.5+, SO_PEERPIDFD, user and mount namespaces)
+      run: |
+        uname -a
+        python - <<'EOF'
+        import errno, os, platform, socket, sys
+
+        release = platform.release()
+        major, minor = (int(part) for part in release.split(".")[:2])
+        if (major, minor) < (6, 5):
+            sys.exit(f"::error::kernel {release} is older than 6.5: SO_PEERPIDFD is missing")
+        left, right = socket.socketpair()
+        try:
+            raw = right.getsockopt(socket.SOL_SOCKET, 77, 4)  # SO_PEERPIDFD
+        except OSError as exc:
+            sys.exit(f"::error::SO_PEERPIDFD is not available: {errno.errorcode.get(exc.errno)}")
+        pidfd = int.from_bytes(raw, sys.byteorder, signed=True)
+        if pidfd < 0:
+            sys.exit("::error::SO_PEERPIDFD returned no descriptor")
+        os.close(pidfd)
+        print(f"kernel {release}: SO_PEERPIDFD ok")
+        EOF
+        if ! unshare --user --map-root-user --mount true; then
+          echo "::error::unprivileged user and mount namespaces are not available"
+          exit 1
+        fi
+        echo "user and mount namespaces ok"
+
+    - name: Unit tests
+      run: ./test-suites/cah/scripts/run-tests.sh
+
+    - name: Fill demo over Unix (pidfd gate and Noise KK)
+      run: CAH_TRANSPORT=unix ./test-suites/cah/scripts/host-native-fill.sh
+
+    - name: Fill demo over lab mTLS
+      run: CAH_TRANSPORT=mtls ./test-suites/cah/scripts/host-native-fill.sh
