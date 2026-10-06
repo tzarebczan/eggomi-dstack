@@ -42,7 +42,7 @@ class PreparedUse:
     audience_instance: str
     field: str
     fence: str
-    keeper_epoch: int
+    requester_instance_id: str
 
 
 def publish_revision(directory: Path, document: Dict[str, Any]) -> str:
@@ -100,14 +100,21 @@ def load_policy(path: Path) -> Dict[str, Any]:
 
 
 def evaluate_prepare(
-    policy: Dict[str, Any], body: Dict[str, Any]
+    policy: Dict[str, Any], body: Dict[str, Any], requester_instance_id: str
 ) -> Optional[PreparedUse]:
-    """Return the keeper binding when ``body`` matches it exactly."""
+    """Return the keeper binding when ``body`` matches it exactly.
+
+    ``requester_instance_id`` is the authenticated caller. The operation must
+    name it, so another admitted requester cannot spend the approval.
+    """
     operation_id = body.get("operation_id")
     if not isinstance(operation_id, str):
         return None
     operation = policy["operations"].get(operation_id)
     if not isinstance(operation, dict):
+        return None
+    owner = operation.get("requester_instance_id")
+    if not isinstance(owner, str) or not owner or owner != requester_instance_id:
         return None
     recipient_id = operation.get("recipient_instance_id")
     handle = operation.get("resource_handle")
@@ -146,13 +153,6 @@ def evaluate_prepare(
     frame_id = operation.get("frame_id")
     navigation = operation.get("navigation_generation")
     fence = lease.get("fence")
-    keeper_epoch = lease.get("keeper_epoch")
-    if (
-        isinstance(keeper_epoch, bool)
-        or not isinstance(keeper_epoch, int)
-        or keeper_epoch < 1
-    ):
-        return None
     if (
         not isinstance(frame_id, str)
         or not isinstance(navigation, str)
@@ -183,7 +183,7 @@ def evaluate_prepare(
         audience_instance=str(expected["audience_instance"]),
         field=str(expected["field"]),
         fence=fence,
-        keeper_epoch=keeper_epoch,
+        requester_instance_id=owner,
     )
 
 
@@ -209,18 +209,17 @@ def _validate(raw: Dict[str, Any]) -> None:
             raise ValueError("keeper policy credential is missing")
         if not isinstance(credential.get("field"), str) or not credential["field"]:
             raise ValueError("keeper policy field is missing")
+    for operation in raw["operations"].values():
+        if not isinstance(operation, dict):
+            raise ValueError("keeper policy operation is missing")
+        owner = operation.get("requester_instance_id")
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("keeper policy operation requester is missing")
     for lease in raw["leases"].values():
         if not isinstance(lease, dict):
             raise ValueError("keeper policy lease is missing")
         if not isinstance(lease.get("fence"), str) or not lease["fence"]:
             raise ValueError("keeper policy fence is missing")
-        keeper_epoch = lease.get("keeper_epoch")
-        if (
-            isinstance(keeper_epoch, bool)
-            or not isinstance(keeper_epoch, int)
-            or keeper_epoch < 1
-        ):
-            raise ValueError("keeper policy keeper_epoch is missing")
 
 
 def _atomic(path: Path, text: str) -> None:

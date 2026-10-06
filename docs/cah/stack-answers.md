@@ -12,13 +12,24 @@ wire code.
   that already has a grant is `denied_payload` and stores nothing. Issue is
   journaled under `host-fence/` with the operation id, so restoring
   `authority/` does not allow a second grant (and so a second fill) for one
-  approved use.
-- The sealed answer is `cah-sealed-answer/v3`. Its associated data adds
-  `keeper_epoch`, the keeper boot epoch named by the guard's lease. The
-  guard reads it from its lease, not from the broker. A seal made under an
-  older keeper boot does not open.
-- Keeper journal rows are fsynced before the call returns. The consume is
-  durable before resolve hands out the sealed bytes.
+  approved use. Each policy operation names its `requester_instance_id`, so
+  another admitted requester cannot spend it.
+- keeper-core advances a durable boot epoch at every start
+  (`state/host-fence/keeper-boot-epoch`). Grants record it. Resolve of a
+  grant from an earlier boot is terminal `denied_boot`. The sealed answer is
+  `cah-sealed-answer/v3`; its associated data adds `keeper_epoch`, which the
+  guard reads from its lease, not from the broker. A seal from an older
+  keeper boot does not open under a lease re-granted by the newer one.
+- Keeper and guard journal rows are fsynced, and so is the directory entry
+  of a new journal or epoch file. The consume is durable before resolve
+  hands out the sealed bytes.
+- The guard holds one fence lock across unwrap, expiry, open, and record.
+  `advance_epoch` takes the same lock, so a rebind cannot land between the
+  unwrap and the fill, and waiting on the lock past the deadline is
+  `grant_expired`.
+- Not changed: whoever holds a guard's private key can seal a blob that
+  guard opens (static-static authentication). That holder is the guard, and
+  the key's secrecy inside the compartment is already the boundary.
 - The W0 packet and integration manifest no longer say the fill secret is
   broker stdin. The keeper holds it in `authority/fill-secret`.
 

@@ -147,6 +147,27 @@ class HandlerTests(unittest.TestCase):
             row = next(iter(stored["grants"].values()))
             self.assertEqual(row["lease"]["keeper_epoch"], 1)
 
+    def test_other_requester_does_not_spend_the_operation(self) -> None:
+        """A second admitted runner cannot claim another runner's operation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = _keeper(root)
+            stolen = dispatch(
+                state,
+                _auth(_identity("omi-runner", "omi-2")),
+                "PrepareUse",
+                _prepare_body(),
+            )
+            self.assertEqual(stolen["code"], "denied_payload")
+            self.assertFalse((root / "authority" / "grants.json").exists())
+            owner = dispatch(
+                state,
+                _auth(_identity("omi-runner", "omi-1")),
+                "PrepareUse",
+                _prepare_body(),
+            )
+            self.assertTrue(owner["ok"], owner)
+
     def test_observed_field_is_not_authority(self) -> None:
         """A body field named observed_* is refused before a grant is stored."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -387,6 +408,7 @@ def _keeper(
         authority=authority,
         channel_private=keeper_private,
         _lock=threading.Lock(),
+        keeper_boot_epoch=1,
     )
 
 

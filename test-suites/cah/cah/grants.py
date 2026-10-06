@@ -13,8 +13,13 @@ guard check. Empty audience, field, and tenant match nothing.
 
 One approved operation yields at most one grant. Issue journals the
 operation id before the grant is saved, so restoring ``authority/`` does not
-let a second ``PrepareUse`` for that operation issue again. Journal rows are
+let a second ``PrepareUse`` for that operation issue again. Journal rows,
+and the directory entry of a newly created journal or epoch file, are
 fsynced before the call that wrote them returns.
+
+Each keeper-core start advances a durable boot epoch under ``host-fence/``
+(``begin_keeper_boot``). A grant records the boot that issued it. Resolve
+under a later boot is terminal ``denied_boot``.
 """
 
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
@@ -181,13 +186,15 @@ class GrantStore:
         broker_instance: Optional[str] = None,
         field: Optional[str] = None,
         tenant: Optional[str] = None,
+        keeper_epoch: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Recheck the authenticated presenter and consume the grant on success.
 
         ``presenter`` is the guard identified by a possession proof. Broker
         observations are not an argument. Role, instance, origin, frame, and
         operation mismatches do not consume the grant. A boot-generation
-        mismatch is terminal ``denied_boot``.
+        mismatch is terminal ``denied_boot``. So is a grant issued under a
+        keeper boot other than ``keeper_epoch``, when the caller passes one.
         """
         with self._locked():
             self._sync_locked()
@@ -210,6 +217,12 @@ class GrantStore:
                 return {"ok": False, "code": code}
             if _expired(grant):
                 return {"ok": False, "code": "grant_expired"}
+            if (
+                keeper_epoch is not None
+                and grant["lease"].get("keeper_epoch") != keeper_epoch
+            ):
+                self._terminal_locked(grant_ref, "denied_boot")
+                return {"ok": False, "code": "denied_boot"}
             if operation_id != grant["task"]["operation_id"]:
                 return {"ok": False, "code": "denied_payload"}
             destination = grant["destination_binding"]
@@ -416,6 +429,25 @@ def host_fence_paths(authority: Path) -> tuple[Path, Path]:
     return fence / "authority-journal.jsonl", fence / "keeper-epoch"
 
 
+def keeper_boot_path(authority: Path) -> Path:
+    """Return the keeper boot epoch file, beside the consume journal."""
+    return authority.parent / "host-fence" / "keeper-boot-epoch"
+
+
+def begin_keeper_boot(path: Path) -> int:
+    """Advance and return the durable keeper boot epoch.
+
+    keeper-core calls this once at start. The value only increases, and it is
+    written before the server accepts a call, so a grant or seal from an
+    earlier boot never matches the running keeper.
+    """
+    with _journal_lock(path):
+        current = _read_epoch(path) if path.exists() else 0
+        nxt = current + 1
+        _write_epoch(path, nxt)
+        return nxt
+
+
 def revoke_instance_grants(
     grants_path: Path,
     journal_path: Path,
@@ -548,11 +580,14 @@ def _party(identity: WorkloadIdentity) -> Dict[str, Any]:
 
 def _append_journal(path: Path, row: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    created = not path.exists()
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
     os.chmod(path, 0o600)
+    if created:
+        fsync_dir(path.parent)
 
 
 def _read_epoch(path: Path) -> int:
@@ -566,9 +601,22 @@ def _read_epoch(path: Path) -> int:
 def _write_epoch(path: Path, epoch: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(f"{epoch}\n", encoding="utf-8")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(f"{epoch}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+    fsync_dir(path.parent)
+
+
+def fsync_dir(directory: Path) -> None:
+    """Make a created or renamed entry in ``directory`` durable."""
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 @contextmanager

@@ -13,9 +13,10 @@ refused.
 `PrepareUse` calls `load_current` on every request. The server does not
 cache the document at startup. A requester echo that disagrees with the
 loaded revision, including tenant, audience, field, origin, lease, and
-recipient, is `denied_payload` and stores nothing. Each lease names the
-`keeper_epoch` (the keeper boot epoch) it was granted under, and the grant
-and the sealed answer bind it. An operation id yields one grant. A second
+recipient, is `denied_payload` and stores nothing. Each operation names
+its `requester_instance_id`. A `PrepareUse` from any other admitted
+requester is `denied_payload` and does not spend the operation. An
+operation id yields one grant. A second
 `PrepareUse` for it is `denied_payload` and stores nothing, also after
 `authority/` is restored, because issue is journaled under `host-fence/`.
 A retry needs a new operation id in a new revision. `ResolveUseGrant` does

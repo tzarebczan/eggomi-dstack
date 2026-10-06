@@ -68,8 +68,19 @@ not consume the grant. On success the answer is one sealed credential. The
 broker forwards it and does not hold the plaintext. The guard rebuilds the
 associated data from its lease, its registry row, and the operation it is
 running. The lease carries the profile-lease fence, the lease epoch, and the
-keeper boot epoch it was granted under. A seal from an older keeper boot does
-not open. Expiry is a guard monotonic offset of at most 30 seconds from a
+keeper boot epoch it was granted under. Each keeper-core start advances a
+durable boot epoch in `state/host-fence/keeper-boot-epoch` before it serves.
+A grant records the boot that issued it, and resolve under a later boot is
+terminal `denied_boot`. A guard whose lease was re-granted under the new boot
+does not open a seal from the old one. The guard unwraps its key, checks
+expiry on its own clock, opens the seal, and records `grant_ref` under one
+fence lock, and a rebind's fence advance takes the same lock.
+
+The seal is authenticated by static-static X25519 between the keeper and the
+guard. Whoever holds the guard's private key can therefore make a blob that
+guard opens. That is the guard itself, so this adds nothing to what the key
+already allows. The key's secrecy inside the compartment is the boundary, as
+for the channel. Expiry is a guard monotonic offset of at most 30 seconds from a
 challenge the guard issued. The keeper's `expires_mono` is not that check.
 
 ## Consumption survives reload

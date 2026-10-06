@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import cah.guard as guard_module
 from cah.crypto_lab import generate_private, public_key, wrap_private
 from cah.guard import GuardStore
 from cah.seal import LiveBinding, open_credential, seal_credential
@@ -201,6 +205,64 @@ class GuardTests(unittest.TestCase):
             current = _seal(public_key(private), keeper_epoch=2)
             filled = store.accept(current, _live(keeper_epoch=2), now_mono=1_001.0)
             self.assertEqual(filled.get("fill"), "cah-synthetic-fill-v1")
+
+    def test_rebind_cannot_land_between_unwrap_and_record(self) -> None:
+        """A fence advance waits for an in-flight fill, or the fill is refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            blob = _seal(public_key(private))
+            rebind_done_mid_fill: list[bool] = []
+            real_open = guard_module.open_credential
+
+            def open_then_rebind(*args: object, **kwargs: object) -> bytes:
+                opened = real_open(*args, **kwargs)  # type: ignore[arg-type]
+                rebind = threading.Thread(
+                    target=GuardStore(
+                        store.fence_dir, store.wrapped_key_path
+                    ).advance_epoch
+                )
+                rebind.start()
+                rebind.join(timeout=0.5)
+                rebind_done_mid_fill.append(not rebind.is_alive())
+                threads.append(rebind)
+                return opened
+
+            threads: list[threading.Thread] = []
+            with mock.patch.object(guard_module, "open_credential", open_then_rebind):
+                result = store.accept(blob, _live(), now_mono=1_001.0)
+            for thread in threads:
+                thread.join(timeout=5)
+            self.assertEqual(rebind_done_mid_fill, [False])
+            self.assertEqual(result.get("fill"), "cah-synthetic-fill-v1")
+            self.assertEqual((root / "fence" / "epoch").read_text().strip(), "2")
+
+    def test_expiry_is_read_after_the_fence_lock(self) -> None:
+        """Waiting on the fence lock past the deadline does not fill."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private, store = _store(root, epoch=1)
+            blob = _seal(public_key(private))
+            released = threading.Event()
+            holding = threading.Event()
+
+            def hold() -> None:
+                with GuardStore(store.fence_dir, store.wrapped_key_path)._locked():
+                    holding.set()
+                    time.sleep(0.3)
+                    released.set()
+
+            def clock() -> float:
+                return 1_020.0 if released.is_set() else 1_001.0
+
+            holder = threading.Thread(target=hold)
+            holder.start()
+            holding.wait(timeout=5)
+            with mock.patch.object(guard_module.time, "monotonic", clock):
+                result = store.accept(blob, _live())
+            holder.join(timeout=5)
+            self.assertEqual(result["code"], "grant_expired")
+            self.assertNotIn("fill", result)
 
     def test_missing_fence_file_does_not_delete_the_wrapped_key(self) -> None:
         """A short read refuses the fill and leaves the wrap in place."""

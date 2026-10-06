@@ -57,6 +57,7 @@ class ServerState:
     channel_private: Optional[bytes]
     _lock: threading.Lock
     peer_instance: Optional[str] = None
+    keeper_boot_epoch: int = 0
 
 
 def dispatch(
@@ -96,7 +97,7 @@ def prepare_use(
         policy = load_current(state.policy_dir)
     except (OSError, ValueError, json.JSONDecodeError):
         return rpc_error("denied_payload")
-    prepared = evaluate_prepare(policy, body)
+    prepared = evaluate_prepare(policy, body, auth.identity.instance_id)
     if prepared is None:
         return rpc_error("denied_payload")
     registry = load_registry(state.registry_path)
@@ -132,7 +133,7 @@ def prepare_use(
             field=prepared.field,
             tenant=prepared.tenant,
             fence=prepared.fence,
-            keeper_epoch=prepared.keeper_epoch,
+            keeper_epoch=state.keeper_boot_epoch,
         )
     except ValueError:
         return rpc_error("denied_payload")
@@ -191,6 +192,7 @@ def resolve_use_grant(
             broker_instance=auth.identity.instance_id,
             field=parsed["field"],
             tenant=parsed["tenant"],
+            keeper_epoch=state.keeper_boot_epoch,
         )
         return rpc_error(str(finished["code"]))
     audience = (
@@ -221,6 +223,7 @@ def resolve_use_grant(
         broker_instance=auth.identity.instance_id,
         field=parsed["field"],
         tenant=parsed["tenant"],
+        keeper_epoch=state.keeper_boot_epoch,
     )
     if not result["ok"]:
         return rpc_error(str(result["code"]))

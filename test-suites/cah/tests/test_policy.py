@@ -40,7 +40,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_matching_prepare_uses_policy_destination(self) -> None:
         """A matching body returns the policy frame and navigation."""
-        prepared = evaluate_prepare(load_policy(POLICY), _body())
+        prepared = evaluate_prepare(load_policy(POLICY), _body(), "omi-1")
         self.assertIsNotNone(prepared)
         assert prepared is not None
         self.assertEqual(prepared.origin, "https://lab.invalid/signin")
@@ -52,13 +52,17 @@ class PolicyTests(unittest.TestCase):
         """An attacker origin does not become the stored policy."""
         forged = _body()
         forged["origin"] = "https://attacker.example"
-        self.assertIsNone(evaluate_prepare(load_policy(POLICY), forged))
+        self.assertIsNone(evaluate_prepare(load_policy(POLICY), forged, "omi-1"))
+
+    def test_other_requester_cannot_spend_the_operation(self) -> None:
+        """The operation names its requester. Another admitted runner is refused."""
+        self.assertIsNone(evaluate_prepare(load_policy(POLICY), _body(), "omi-2"))
 
     def test_forged_recipient_is_refused(self) -> None:
         """The requester cannot retarget the lease."""
         forged = _body()
         forged["recipient_instance_id"] = "browser-2"
-        self.assertIsNone(evaluate_prepare(load_policy(POLICY), forged))
+        self.assertIsNone(evaluate_prepare(load_policy(POLICY), forged, "omi-1"))
 
     def test_publish_is_reloaded_and_immutable(self) -> None:
         """The current pointer changes, and an existing revision id cannot."""
@@ -73,7 +77,7 @@ class PolicyTests(unittest.TestCase):
             publish_revision(directory, nxt)
             loaded = load_current(directory)
             self.assertEqual(loaded["tenant"], "tenant-lab-2")
-            prepared = evaluate_prepare(loaded, _body())
+            prepared = evaluate_prepare(loaded, _body(), "omi-1")
             self.assertIsNone(prepared)
             changed = json.loads(json.dumps(nxt))
             changed["tenant"] = "tenant-other"

@@ -9,12 +9,19 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from cah.grants import GrantStore, OperationSpent, host_fence_paths
+from cah.grants import (
+    GrantStore,
+    OperationSpent,
+    begin_keeper_boot,
+    host_fence_paths,
+    keeper_boot_path,
+)
 from cah.registry import WorkloadIdentity
 
 
@@ -513,6 +520,50 @@ class GrantTests(unittest.TestCase):
                 )
             self.assertTrue(result["ok"])
             self.assertTrue(synced)
+
+    def test_grant_from_an_earlier_keeper_boot_is_denied_boot(self) -> None:
+        """A keeper restart advances the boot epoch; old grants do not resolve."""
+        with tempfile.TemporaryDirectory() as tmp:
+            authority = Path(tmp) / "authority"
+            boot = keeper_boot_path(authority)
+            self.assertEqual(begin_keeper_boot(boot), 1)
+            store = GrantStore(authority / "grants.json")
+            recipient = _id("browser-guard", "browser-1", "boot-1")
+            record = _issue(store, recipient)
+            self.assertEqual(begin_keeper_boot(boot), 2)
+            args = (
+                str(record["grant_ref"]),
+                recipient,
+                "https://lab.invalid/signin",
+                "op-1",
+                "frame-1",
+                "nav-1",
+            )
+            kwargs = {
+                "broker_instance": "broker-1",
+                "field": "password",
+                "tenant": "tenant-lab-1",
+            }
+            stale = store.resolve(*args, keeper_epoch=2, **kwargs)
+            self.assertEqual(stale["code"], "denied_boot")
+            again = store.resolve(*args, keeper_epoch=1, **kwargs)
+            self.assertEqual(again["code"], "denied_boot")
+            self.assertEqual(int(boot.read_text(encoding="utf-8")), 2)
+
+    def test_new_journal_directory_entry_is_fsynced(self) -> None:
+        """Creating the journal fsyncs its directory, not only the file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GrantStore(Path(tmp) / "grants.json")
+            synced_dirs: list[bool] = []
+            real_fsync = os.fsync
+
+            def spy(fd: int) -> None:
+                synced_dirs.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+                real_fsync(fd)
+
+            with mock.patch("cah.grants.os.fsync", side_effect=spy):
+                _issue(store, _id("browser-guard", "browser-1", "boot-1"))
+            self.assertIn(True, synced_dirs)
 
     def test_restoring_authority_does_not_revive_consume(self) -> None:
         """The host fence sits outside authority/, so a restored snapshot stays consumed."""
