@@ -6,6 +6,18 @@ at `30bba240`. The keeper-gap pass after that merge is the PR that adds
 this paragraph. Pin the `next` SHA it merges as. `revoked_boot` is not a
 wire code.
 
+## Founder decisions on the adapter's questions (#747, #748)
+
+The stack asks from those decisions land in one PR after `56cd7653`.
+
+| Ask | Status |
+| --- | --- |
+| Launcher signs each row (`launcher_sig`) | Done. Ed25519 over Eggomi's `rowMessage` bytes. The key is `state/launcher/row-signing.key`, outside every compartment. Readers take the 32-byte public key by configuration (`--launcher-public`). An unsigned or badly signed row is no identity, at the pidfd gate and at resolve. `cah/launcher.py`, `cah/registry.py`. |
+| Refuse a key already bound elsewhere | Done. First owner (instance and role) wins, even after its row is gone. Memory is `state/launcher/key-owners.jsonl`, fsynced, outside `authority/` and the registry. |
+| Lab channel moves to Noise KK | Done. `Noise_KK_25519_ChaChaPoly_SHA256`, prologue `eggomi/cah-channel/v1`, Eggomi's framing and keeper.sock JSON. `cah-channel/v1` is gone. The keeper rechecks the row before every call. `cah/noise.py` passes the official KK vectors. |
+| Interop proof | Done. `vectors/eggomi-interop.json` comes from Eggomi's `channel.ts`, `registry.ts` and `packages/noise`; `tests/test_interop.py` reproduces it in Python in CI. `scripts/eggomi-interop.sh <eggomi-repo>` also runs Eggomi's TypeScript against the stack over sockets. |
+| CI job | Done. `.github/workflows/cah-tests.yml` on `ubuntu-24.04`. It fails before the tests when the kernel is older than 6.5, `SO_PEERPIDFD` is missing, or user and mount namespaces do not work. Nothing is skipped. |
+
 ## Keeper-gap pass after the merge
 
 - One approved operation yields one grant. `PrepareUse` for an operation id
@@ -82,7 +94,7 @@ writes the registry.
 Deferred on this branch. Real-hardware SNP vectors, the MrConfigV3 identity
 spec, and the choice of a TypeScript or WASM verifier are keeper and
 hardware work. `HOST_ATTEST_KEY_PROVIDERS` waits for hardware. The simulated
-KMS layer from F2 is ask 9, on a branch stacked on PR #1, and its outputs
+KMS layer from F2 is ask 9. It merged as PR #4, lab-only, and its outputs
 do not pass a production gate. Phala TDX is unchanged. The platform-tagged
 verdict stays with the keeper.
 
@@ -90,8 +102,9 @@ verdict stays with the keeper.
 
 `SO_PEERCRED` is gone. Unix admission uses `SO_PEERPIDFD` and refuses when
 that option is missing. The pidfd must still be alive before start time is
-trusted. pid and start time only gate channel setup. Unix RPC then uses the
-registered static key. Lab mTLS over TCP is the keyed channel on that
+trusted. pid and start time only gate channel setup. Unix RPC then runs on
+Noise KK keyed to the registered static key (prologue
+`eggomi/cah-channel/v1`), the same wire as Eggomi's keeper. Lab mTLS over TCP is the keyed channel on that
 transport, because `SO_PEERPIDFD` is not available on an `AF_INET` socket.
 Key secrecy inside the compartment is the identity boundary. A passed fd
 without the key cannot complete a frame. Tests cover a dead pidfd, a missing

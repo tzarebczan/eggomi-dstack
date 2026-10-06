@@ -80,8 +80,15 @@ class PinTests(unittest.TestCase):
                 "fill_secret",
                 "grant_store",
                 "registry",
+                "launcher_key",
             ],
         )
+        from cah.launcher import KEY_OWNERS, SIGNING_KEY, launcher_dir
+
+        launcher = next(k for k in packet["key_inventory"] if k["id"] == "launcher_key")
+        state_launcher = launcher_dir(Path("state/admission.json"))
+        self.assertEqual(launcher["path"], str(state_launcher / SIGNING_KEY))
+        self.assertEqual(launcher["owners_path"], str(state_launcher / KEY_OWNERS))
         self.assertEqual(
             [row["id"] for row in packet["gates"]],
             ["G0", "G1", "G2", "G3", "G4", "G5"],
@@ -113,6 +120,13 @@ class PinTests(unittest.TestCase):
         # The journal is outside the restorable authority tree (host_fence_paths).
         self.assertNotIn("`authority/authority-journal.jsonl`", note)
         self.assertIn("`host-fence/authority-journal.jsonl`", note)
+        self.assertIn("launcher_sig", note)
+        self.assertIn("eggomi/cah-channel/v1", note)
+        answers = (REPO / "docs/cah/stack-answers.md").read_text(encoding="utf-8")
+        self.assertNotIn("stacked on PR #1", answers)
+        self.assertIn("merged as PR #4, lab-only", answers)
+        names = (REPO / "docs/cah/name-map.md").read_text(encoding="utf-8")
+        self.assertNotIn("HMAC AEAD", names)
         manifest = (REPO / "docs/cah/integration-manifest.md").read_text(
             encoding="utf-8"
         )

@@ -68,7 +68,8 @@ The stub broker does not implement them.
 | Instance keys | `state/authority/certs/<instance>.key` and `state/roles/<instance>/key.pem`, mode 0600, mTLS only | That instance's mount keeps only its own role directory. Unix transport does not issue these keys. |
 | Fill secret | `state/authority/fill-secret`, mode 0600, lab canary `cah-synthetic-fill-v1` | Keeper only. Resolve seals it once per grant to the recipient guard. The broker relays ciphertext and never holds it. The guard may write the opened value only to `results/positive_fill.json` and `results/copied_owner_fill.json`. |
 | Grant store | `state/authority/grants.json` plus `state/host-fence/authority-journal.jsonl`, `state/host-fence/keeper-epoch` and `state/host-fence/keeper-boot-epoch`, mode 0600 | Keeper. Restoring `state/authority` does not roll either epoch back or erase a journaled consume. The boot epoch advances at every keeper start and is sealed into each answer. |
-| Registry | `state/admission.json`, lock `admission.json.lock`, mode 0600 | Launcher and keeper write it under the lock. Confined processes see a read-only bind. |
+| Registry | `state/admission.json`, lock `admission.json.lock`, mode 0600 | Launcher and keeper write it under the lock. Confined processes see a read-only bind. Every row carries `launcher_sig`. |
+| Launcher key | `state/launcher/row-signing.key` (Ed25519) and `state/launcher/key-owners.jsonl`, mode 0600 | Launcher. Confined processes hide `state/launcher`. Readers are configured with the public key. The owner journal keeps each key's first instance and role. |
 
 A certificate-fingerprint change or a channel public key change advances
 `boot_generation`. The caller revokes that instance's issued grants on

@@ -34,9 +34,44 @@ explicit deviations and are not silent replacements of the WS1 file:
 | `credential-broker` → keeper `ResolveUseGrant` | keeper → broker `AuthorizeUse` |
 | browser → keeper `ReportOutcome` | keeper → browser `ExecuteBrowserOperation` |
 | browser → keeper `QueryOutcome` | WS1 has no separate outcome query |
-| launcher writes the registry in-process | launcher → identity-service `IssueForVerifiedLaunch` |
+| launcher writes and signs the registry in-process (`launcher_sig`) | launcher → identity-service `IssueForVerifiedLaunch` |
 
 The opaque grant stays in keeper. The broker asks keeper to consume it.
+
+## Registry attribution
+
+Every `admission-registry/v1` row carries `launcher_sig`: Ed25519 (RFC 8032,
+pure) by the launcher's host key, 128 lowercase hex characters. The signed
+bytes are the UTF-8 encoding of `"eggomi/admission-row/v1\n"` followed by
+a compact JSON array, in `JSON.stringify` encoding, of `trust_domain` and
+`tenant` (from the document), `role`, `instance_id`, `boot_id`,
+`boot_generation`, `boot_history`, `channel_public`, `cert_fingerprint`,
+`pid` and `starttime`. That is Eggomi's `rowMessage`
+(`apps/desktop/src/keeper/cah/registry.ts`), and
+`test-suites/cah/vectors/eggomi-interop.json` holds signatures both sides
+reproduce. The launcher refuses to sign a row Eggomi's `parseRow` would call
+malformed.
+
+The private key is `state/launcher/row-signing.key`, a sibling of
+`authority/` and `host-fence/`, hidden from every confined compartment.
+keeper-core, the other servers and the clients are configured with the
+32-byte public key (`--launcher-public`). The registry never names it. A
+lookup only returns rows whose signature verifies, so an unsigned, edited or
+foreign-signed row is no identity: the pidfd gate refuses its peer with
+`denied_unadmitted`, and resolve does not find it as a recipient. An
+instance, channel key or fingerprint that two signed rows claim is no
+identity for either.
+
+The launcher also refuses to sign a row whose channel key or certificate
+fingerprint was ever signed for another instance or role. The first owner
+wins, permanently, even after its row is gone, so a clone launched with its
+parent's key does not speak as the parent. That memory is
+`state/launcher/key-owners.jsonl`: append-only, each new owner fsynced
+(with its directory entry on create) before the registry that names it is
+written, outside `authority/` and outside the registry. Restoring
+`authority/`, or rewriting or deleting the registry, does not clear it. An
+instance may return to its own earlier key (A → B → A); that still advances
+`boot_generation`.
 
 ## Recipient binding
 
@@ -100,14 +135,40 @@ call returns, so the consume is durable before the sealed answer leaves.
 
 Use ttl is capped at 60 seconds.
 
+## The compartment channel
+
+Unix RPC is Noise KK, the wire Eggomi's keeper speaks
+(`apps/desktop/src/keeper/cah/channel.ts`):
+`Noise_KK_25519_ChaChaPoly_SHA256`, prologue `eggomi/cah-channel/v1`. The
+workload is the initiator and knows the keeper's static key. The keeper
+knows the workload's from its signed registry row. Each frame is a u16
+big-endian length (1 to 65 535) and that many bytes. The workload sends
+`0x01 ‖ KK message 1` (e, es, ss) with an empty payload. The keeper answers
+`0x01 ‖ KK message 2` (e, ee, se), or refuses before any channel with
+`0x00 ‖ ASCII code` and FIN. Each later frame is one transport message
+(empty associated data, implicit counter nonce) carrying keeper.sock JSON:
+`{"id","method","params"}` in, `{"id","result"}` or
+`{"id","error":{"code","message"}}` out.
+
+The keeper re-reads the peer's row before every call. A row that is gone is
+`denied_unadmitted`, a row whose incarnation changed is `denied_boot`, and
+that refusal is the last frame before FIN. A frame that does not decrypt,
+a zero length, or a malformed request closes the connection without a
+reply. `SO_PEERPIDFD` (no `SO_PEERCRED` fallback) and a live pidfd still
+gate the handshake. A process that holds a passed fd but not the registered
+key cannot finish message 1.
+
 ## What this process split is
 
 Non-keeper processes run in a user and mount namespace that hides
-`state/authority` and other role directories, then bind-mounts only that
+`state/authority`, `state/launcher` and other role directories, then bind-mounts only that
 process's role material. `admission.json` is remounted read-only in that
 namespace. Keeper stays unconfined because it owns the policy, the lab CA
 key, and the journal.
 
 Same-uid ptrace between the launcher and a stub is not additionally blocked.
+keeper-core is unconfined and shares the launcher's uid, so in this lab
+layout it could read the launcher's row key. The signature attributes rows
+against every confined compartment, not against the keeper process.
 Evidence for the fill remains E1 / `process_e2e`. It is not a confidentiality
 claim and not `confidential_baremetal`.
