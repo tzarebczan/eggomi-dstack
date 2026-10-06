@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Eggomi SEV-SNP simulation harness
 
 This harness boots a dstack development image through the existing
