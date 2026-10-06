@@ -29,6 +29,8 @@ SNP verifier. `HOST_DATA` and the MrConfigV3 identity spec stay with the
 keeper until hardware vectors exist. Do not install this ARK, seed, or key
 in a production KMS, verifier, or image.
 
+From the repository root:
+
 ```bash
-cargo test -p snp-sim-kms
+cargo test --manifest-path dstack/Cargo.toml -p snp-sim-kms
 ```

@@ -17,6 +17,8 @@ This crate does not change Phala TDX, production KMS key derivation, or the
 production `sev_snp_key_release` config. Do not point a production KMS at
 these roots.
 
+From the repository root:
+
 ```bash
-cargo test -p snp-sim-kms
+cargo test --manifest-path dstack/Cargo.toml -p snp-sim-kms
 ```

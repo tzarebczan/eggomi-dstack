@@ -123,7 +123,7 @@ run.
 
 `snp-sim-kms` is the in-process simulated SEV-SNP key service. It is lab-only:
 a production quote verifier rejects its VCEK chain, and `production_gate`
-does not return success. Run `cargo test -p snp-sim-kms`. The notes are in
+does not return success. From the repository root, run `cargo test --manifest-path dstack/Cargo.toml -p snp-sim-kms`. The notes are in
 [docs/eggomi/simulated-snp-kms.md](../../docs/eggomi/simulated-snp-kms.md).
 
 ## Nested virtualization
