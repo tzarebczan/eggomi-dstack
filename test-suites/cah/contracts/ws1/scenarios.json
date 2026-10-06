@@ -1,0 +1,427 @@
+{
+  "schema_version": "eggomi/workload-scenarios/v1",
+  "status": "synthetic_proposals_not_observed_usage",
+  "scenarios": [
+    {
+      "id": "WS-SIM01",
+      "name": "closed-client-chat",
+      "primary_role": "connector",
+      "procedure": "Receive into archive with every client closed, reopen thin timeline.",
+      "acceptance_refs": [
+        "WS-DATA01",
+        "WS-CRED07"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM02",
+      "name": "api-refresh-handover",
+      "primary_role": "connector",
+      "procedure": "Refresh provider credentials with delayed response across ownership transition.",
+      "acceptance_refs": [
+        "WS-CRED06",
+        "WS-LIFE07"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM03",
+      "name": "large-archive-query",
+      "primary_role": "data-service",
+      "procedure": "100k/1m records, bounded client windows, cold/warm lexical search.",
+      "acceptance_refs": [
+        "WS-DATA03",
+        "WS-PERF01"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM04",
+      "name": "omi-context-and-wait",
+      "primary_role": "omi-worker",
+      "procedure": "Source-bound response and future wait without a reserved browser.",
+      "acceptance_refs": [
+        "WS-AUTH03",
+        "WS-PERF03"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM05",
+      "name": "approved-write-crash",
+      "primary_role": "keeper-authority",
+      "procedure": "Provider accepts then reply is lost; same-operation recovery.",
+      "acceptance_refs": [
+        "WS-RPC03",
+        "WS-LIFE03"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM06",
+      "name": "browser-signin",
+      "primary_role": "browser-guard",
+      "procedure": "Lease/profile attach, hostile frame race, broker fill, profile commit.",
+      "acceptance_refs": [
+        "WS-CRED02",
+        "WS-CRED03",
+        "WS-LIFE04"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM07",
+      "name": "workbench-file-task",
+      "primary_role": "workbench",
+      "procedure": "Transform selected input with controlled network and denied keeper access.",
+      "acceptance_refs": [
+        "WS-CRED01",
+        "WS-NET03"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM08",
+      "name": "artifact-promotion",
+      "primary_role": "artifact-service",
+      "procedure": "Stage output, kill worker, prove committed artifact survives.",
+      "acceptance_refs": [
+        "WS-LIFE01",
+        "WS-LIFE04"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM09",
+      "name": "offline-device-limited",
+      "primary_role": "omi-worker",
+      "procedure": "Desktop sleep/cloud-unready, phone fallback, wake during immutable turn.",
+      "acceptance_refs": [
+        "WS-AUTH06",
+        "WS-PLAT02"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM10",
+      "name": "identity-and-revocation",
+      "primary_role": "identity-service",
+      "procedure": "Renew cert, lose issuer/witness, revoke active stream and move clock.",
+      "acceptance_refs": [
+        "WS-ID07",
+        "WS-RPC07",
+        "WS-LIFE05"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM11",
+      "name": "cross-tenant-adversary",
+      "primary_role": "launcher",
+      "procedure": "Guess handles, reuse CIDs, role spoof and copied capability.",
+      "acceptance_refs": [
+        "WS-ID01",
+        "WS-ID02",
+        "WS-ID05",
+        "WS-RPC02"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM12",
+      "name": "branch-and-restore",
+      "primary_role": "launcher",
+      "procedure": "Pristine and live-user checkpoint paths with pre-network activation barrier.",
+      "acceptance_refs": [
+        "WS-ID08",
+        "WS-LIFE02",
+        "WS-NET05"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM13",
+      "name": "selective-archive-restore",
+      "primary_role": "data-service",
+      "procedure": "Old SQLite plus current protocol store, distinct from legal pruning.",
+      "acceptance_refs": [
+        "WS-DATA02"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM14",
+      "name": "noisy-neighbor",
+      "primary_role": "workbench",
+      "procedure": "Heavy build/import and small interactive accounts under quotas.",
+      "acceptance_refs": [
+        "WS-PERF01",
+        "WS-PERF02"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM15",
+      "name": "host-loss-storm",
+      "primary_role": "launcher",
+      "procedure": "Loss of cohort, replacement capacity and simultaneous reconnect.",
+      "acceptance_refs": [
+        "WS-PERF04",
+        "WS-PERF05"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM16",
+      "name": "local-quota-and-last-keeper",
+      "primary_role": "data-service",
+      "procedure": "Quota pressure with pending edits and reverse migration.",
+      "acceptance_refs": [
+        "WS-DATA03",
+        "WS-PLAT02"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM17",
+      "name": "egress-interceptor-failure",
+      "primary_role": "credential-broker",
+      "procedure": "Missing/rebound interceptor, alternative routes and protocol restrictions.",
+      "acceptance_refs": [
+        "WS-NET01",
+        "WS-NET02",
+        "WS-NET03",
+        "WS-NET04"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    },
+    {
+      "id": "WS-SIM18",
+      "name": "rate-limit-and-waits",
+      "primary_role": "connector",
+      "procedure": "429/5xx, slow responses, approval delays and cancellation under fixed IDs.",
+      "acceptance_refs": [
+        "WS-RPC03",
+        "WS-RPC05",
+        "WS-PERF01"
+      ],
+      "prerequisites": [
+        "exact run manifest",
+        "isolated synthetic identities/providers",
+        "matching predecessor capability gates"
+      ],
+      "oracle": "Existing dispatcher/archive journal plus independent provider/fixture observer; forbidden probes do not disable the permitted positive path.",
+      "resource_requirements": [
+        "role CPU/memory",
+        "lifecycle occupancy",
+        "latency stages",
+        "success/unknown/refusal counts",
+        "measurement quality and cost inputs"
+      ]
+    }
+  ]
+}

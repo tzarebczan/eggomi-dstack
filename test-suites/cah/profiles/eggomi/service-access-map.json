@@ -1,0 +1,72 @@
+{
+  "schema_version": "cah-service-access-map/v1",
+  "ws1_schema": "eggomi/workload-service-access/v1",
+  "ws1_file": "contracts/ws1/service-access.json",
+  "ws1_sha256": "379db489ac1d7385bb9c3aee847ff69c7e2d6149a9d0a9519d79814f77fef9a1",
+  "roles": {
+    "keeper-core": "keeper-authority",
+    "omi-runner": "omi-worker",
+    "platform-launcher": "launcher",
+    "credential-broker": "credential-broker",
+    "browser-guard": "browser-guard",
+    "connector": "connector",
+    "workload-issuer": "identity-service",
+    "telemetry-agent": "metering-agent"
+  },
+  "edges": [
+    {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "PrepareUse",
+      "ws1_caller": "omi-worker",
+      "ws1_callee": "keeper-authority",
+      "ws1_method": "PrepareSignIn",
+      "deviation": null
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "credential-broker",
+      "method": "CompleteFill",
+      "ws1_caller": "browser-guard",
+      "ws1_callee": "credential-broker",
+      "ws1_method": "ConsumeFill",
+      "deviation": null
+    },
+    {
+      "caller_role": "credential-broker",
+      "callee": "keeper-core",
+      "method": "ResolveUseGrant",
+      "ws1_caller": null,
+      "ws1_callee": null,
+      "ws1_method": null,
+      "deviation": "WS1 sends keeper-authority to credential-broker AuthorizeUse. This stub keeps the opaque grant in keeper-core and lets the broker ask keeper to consume it."
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "keeper-core",
+      "method": "ReportOutcome",
+      "ws1_caller": null,
+      "ws1_callee": null,
+      "ws1_method": null,
+      "deviation": "WS1 returns the outcome on keeper-authority to browser-guard ExecuteBrowserOperation. ReportOutcome is a stub edge, and it is accepted only for the consumed grant's recipient. unknown is a recorded outcome."
+    },
+    {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "QueryOutcome",
+      "ws1_caller": null,
+      "ws1_callee": null,
+      "ws1_method": null,
+      "deviation": "QueryOutcome lets the requester read unknown when a consumed grant has no report yet, and the first terminal report after that. WS1 has no separate query method."
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "keeper-core",
+      "method": "QueryOutcome",
+      "ws1_caller": null,
+      "ws1_callee": null,
+      "ws1_method": null,
+      "deviation": "QueryOutcome lets the recipient read a recorded fill outcome, including unknown when no report has been stored. The first terminal report per grant_ref is final. WS1 has no separate query method."
+    }
+  ]
+}

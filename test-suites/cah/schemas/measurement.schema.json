@@ -1,0 +1,1103 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "resource-measurement/v1"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,160}$"
+    },
+    "metric_id": {
+      "enum": [
+        "cpu_seconds",
+        "task_cpu_seconds",
+        "cpu_throttled_seconds",
+        "memory_resident_bytes",
+        "memory_allocated_bytes",
+        "memory_peak_bytes",
+        "memory_time_gib_seconds",
+        "oom_count",
+        "pressure_stall_seconds",
+        "network_bytes",
+        "connection_idle_bytes",
+        "connection_backlog_count",
+        "ingest_durable_seconds",
+        "source_visible_seconds",
+        "witness_commit_seconds",
+        "query_seconds",
+        "client_loaded_rows",
+        "storage_retained_bytes",
+        "storage_index_bytes",
+        "storage_write_bytes",
+        "storage_commit_seconds",
+        "restore_seconds",
+        "omi_first_progress_seconds",
+        "model_first_token_seconds",
+        "model_tokens_count",
+        "action_end_to_end_seconds",
+        "approval_wait_seconds",
+        "unknown_outcome_count",
+        "reconcile_seconds",
+        "queued_operations_count",
+        "reconnect_seconds",
+        "identity_issuance_count",
+        "tls_handshake_seconds",
+        "authorization_denied_count",
+        "revocation_refusal_seconds",
+        "rpc_queue_seconds",
+        "browser_first_use_seconds",
+        "browser_action_seconds",
+        "browser_active_seconds",
+        "profile_io_bytes",
+        "artifact_bytes",
+        "workbench_exec_seconds",
+        "workload_start_seconds",
+        "resource_release_seconds",
+        "fleet_allocations_count",
+        "power_watts",
+        "telemetry_dropped_count",
+        "telemetry_export_bytes",
+        "scenario_outcomes_count",
+        "quality_gate_pass_count"
+      ]
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "measurement_scope": {
+      "enum": [
+        "physical_host",
+        "outer_cvm",
+        "inner_guest",
+        "component",
+        "operation",
+        "fleet"
+      ]
+    },
+    "role": {
+      "enum": [
+        "platform-launcher",
+        "workload-issuer",
+        "keeper-core",
+        "data-service",
+        "credential-broker",
+        "connector",
+        "matrix-device",
+        "omi-runner",
+        "browser-guard",
+        "workbench",
+        "telemetry-agent",
+        "aggregate",
+        "client",
+        "model-route"
+      ]
+    },
+    "origin": {
+      "enum": [
+        "measured",
+        "estimated",
+        "simulated",
+        "unavailable"
+      ]
+    },
+    "privacy": {
+      "enum": [
+        "protected_detail",
+        "approved_aggregate"
+      ]
+    },
+    "interval_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "value": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "sample_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "counter_reset": {
+      "type": "boolean"
+    },
+    "aggregation_basis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "protected_attribution_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "missing_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "time_basis": {
+      "enum": [
+        "monotonic_real",
+        "utc_real",
+        "virtual"
+      ]
+    },
+    "interval_start": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Timestamp string in the declared time basis; null only for an unavailable example."
+    },
+    "observation_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Protected run-artifact reference for source instance/boot, reset and histogram detail. Never an exported metrics label."
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "metric_id",
+    "unit",
+    "measurement_scope",
+    "role",
+    "origin",
+    "privacy",
+    "interval_seconds",
+    "value",
+    "sample_count",
+    "counter_reset",
+    "aggregation_basis",
+    "protected_attribution_ref",
+    "missing_reason",
+    "time_basis",
+    "interval_start",
+    "observation_ref"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "origin": {
+            "const": "unavailable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "value": {
+            "type": "null"
+          },
+          "sample_count": {
+            "const": 0
+          },
+          "missing_reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "value": {
+            "type": "number"
+          },
+          "sample_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "missing_reason": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "privacy": {
+            "const": "approved_aggregate"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "protected_attribution_ref": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "origin": {
+            "const": "measured"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "time_basis": {
+            "enum": [
+              "monotonic_real",
+              "utc_real"
+            ]
+          },
+          "interval_start": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "privacy": {
+            "const": "approved_aggregate"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observation_ref": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "origin": {
+            "const": "measured"
+          },
+          "privacy": {
+            "const": "protected_detail"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observation_ref": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "cpu_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "task_cpu_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "cpu_throttled_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "memory_resident_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "memory_allocated_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "memory_peak_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "memory_time_gib_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "GiBy.s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "oom_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{event}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "pressure_stall_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "network_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "connection_idle_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "connection_backlog_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{message}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "ingest_durable_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "source_visible_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "witness_commit_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "query_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "client_loaded_rows"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{row}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "storage_retained_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "storage_index_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "storage_write_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "storage_commit_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "restore_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "omi_first_progress_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "model_first_token_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "model_tokens_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{token}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "action_end_to_end_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "approval_wait_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "unknown_outcome_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{operation}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "reconcile_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "queued_operations_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{operation}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "reconnect_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "identity_issuance_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{certificate}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "tls_handshake_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "authorization_denied_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{request}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "revocation_refusal_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "rpc_queue_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "browser_first_use_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "browser_action_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "browser_active_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "profile_io_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "artifact_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "workbench_exec_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "workload_start_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "resource_release_seconds"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "s"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "fleet_allocations_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{allocation}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "power_watts"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "W"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "telemetry_dropped_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{sample}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "telemetry_export_bytes"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "By"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "scenario_outcomes_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{journey}"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric_id": {
+            "const": "quality_gate_pass_count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": {
+            "const": "{evaluation}"
+          }
+        }
+      }
+    }
+  ],
+  "description": "One scalar observation or declared interval aggregation. Native histograms/distributions remain in the protected result artifact; do not collapse histogram quantiles across runs. Schema validation is not measurement evidence."
+}

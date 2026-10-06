@@ -1,0 +1,12 @@
+{
+  "schema_version": "cah-experiment/v1",
+  "id": "cah-fill-v1-e1",
+  "evidence_level": "E1",
+  "deployment_class": "L",
+  "fidelity": "host-native",
+  "security_profile": "lab-unix-pidfd-or-lab-mtls",
+  "scenario_port": "fill-v1",
+  "retired_scenario_alias": "J06",
+  "ws_sim_id": null,
+  "note": "Harness-local experiment record. The WS1 revision 1 experiment.schema was not attached, so this file does not claim to satisfy that unseen schema. It is not a cost or SLO result."
+}

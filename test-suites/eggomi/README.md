@@ -136,3 +136,7 @@ separate.
 Delete `.state/` between CI jobs or whenever rotating the mock seed. Never
 copy these roots or seeds into a production KMS, verifier, image, or secret
 workflow.
+
+Compartment RPC for the Eggomi profile runs from
+[`test-suites/cah`](../cah/README.md). `CAH_MODE=outer` is the only CAH path
+that invokes S0. The fill demo stays on the host.

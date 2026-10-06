@@ -1,0 +1,656 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:eggomi:workload-experiment:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "status",
+    "evidence_level",
+    "simulation_agent_binding",
+    "seed",
+    "deployment_profile",
+    "artifacts",
+    "hardware",
+    "security_profile",
+    "population",
+    "scenario_ids",
+    "model_mode",
+    "campaign",
+    "cost_inputs",
+    "results"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "eggomi/workload-experiment/v1"
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "planned",
+        "running",
+        "completed",
+        "invalid"
+      ]
+    },
+    "evidence_level": {
+      "enum": [
+        "analytical",
+        "discrete_event",
+        "process_e2e",
+        "vm_e2e",
+        "confidential_baremetal",
+        "disposable_live_provider"
+      ]
+    },
+    "simulation_agent_binding": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deployment_profile": {
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eggomi",
+        "dstack",
+        "smolvm",
+        "identity_adapter",
+        "guest_kernel",
+        "gvisor",
+        "rpc_library",
+        "policy"
+      ],
+      "properties": {
+        "eggomi": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "dstack": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "smolvm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "identity_adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "guest_kernel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "gvisor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "rpc_library": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference",
+            "status"
+          ],
+          "properties": {
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "enum": [
+                "reference_only",
+                "unbound",
+                "tested_pin"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inventory_ref",
+        "confidential_mode",
+        "context_capacity",
+        "ram_bytes",
+        "cpu_cores"
+      ],
+      "properties": {
+        "inventory_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidential_mode": {
+          "enum": [
+            "unverified",
+            "none",
+            "TDX",
+            "SEV-SNP",
+            "other_explicit"
+          ]
+        },
+        "context_capacity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ram_bytes": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cpu_cores": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "security_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tls13_mutual",
+        "early_data",
+        "owner_approval_enforced",
+        "tenant_binding_enforced",
+        "no_plaintext_telemetry",
+        "interceptor_mode",
+        "snapshot_class",
+        "policy_ref"
+      ],
+      "properties": {
+        "tls13_mutual": {
+          "const": true
+        },
+        "early_data": {
+          "const": false
+        },
+        "owner_approval_enforced": {
+          "const": true
+        },
+        "tenant_binding_enforced": {
+          "const": true
+        },
+        "no_plaintext_telemetry": {
+          "const": true
+        },
+        "interceptor_mode": {
+          "enum": [
+            "typed_broker",
+            "builtin_substitution",
+            "external_interceptor",
+            "mixed_separate_workloads"
+          ]
+        },
+        "snapshot_class": {
+          "enum": [
+            "none",
+            "pristine",
+            "application_checkpoint",
+            "ram_experiment"
+          ]
+        },
+        "policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "population": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "registered_users",
+        "archetypes"
+      ],
+      "properties": {
+        "provenance": {
+          "const": "illustrative_synthetic_not_observed"
+        },
+        "registered_users": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "archetypes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "users",
+              "arrival_profile_ref"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "users": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "arrival_profile_ref": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "scenario_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^WS-SIM[0-9]{2}$"
+      }
+    },
+    "model_mode": {
+      "enum": [
+        "deterministic_stub",
+        "trace_replayed",
+        "local",
+        "confidential",
+        "approved_external"
+      ]
+    },
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "independent_runs",
+        "wall_seconds_per_run",
+        "soak_seconds",
+        "open_loop",
+        "record_queue_latency"
+      ],
+      "properties": {
+        "independent_runs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "wall_seconds_per_run": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "soak_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_loop": {
+          "type": "boolean"
+        },
+        "record_queue_latency": {
+          "const": true
+        }
+      }
+    },
+    "cost_inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "category",
+          "value",
+          "unit",
+          "currency",
+          "provenance",
+          "source_ref"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "unit": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "unknown",
+              "observed",
+              "quoted",
+              "hypothetical"
+            ]
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "results": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "evidence_packet_ref",
+            "oracle_verdict",
+            "measurements_ref",
+            "cost_report_ref",
+            "limitations"
+          ],
+          "properties": {
+            "evidence_packet_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "oracle_verdict": {
+              "enum": [
+                "pass",
+                "fail",
+                "inconclusive"
+              ]
+            },
+            "measurements_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cost_report_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "completed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "results": {
+            "type": "object"
+          },
+          "simulation_agent_binding": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "running",
+              "completed"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "simulation_agent_binding": {
+            "type": "string",
+            "minLength": 1
+          },
+          "security_profile": {
+            "properties": {
+              "policy_ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "completed"
+          },
+          "evidence_level": {
+            "const": "confidential_baremetal"
+          }
+        },
+        "required": [
+          "status",
+          "evidence_level"
+        ]
+      },
+      "then": {
+        "properties": {
+          "hardware": {
+            "properties": {
+              "inventory_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidential_mode": {
+                "enum": [
+                  "TDX",
+                  "SEV-SNP",
+                  "other_explicit"
+                ]
+              },
+              "ram_bytes": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "cpu_cores": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

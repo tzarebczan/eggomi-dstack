@@ -1,0 +1,37 @@
+{
+  "schema_version": "service-access/v1",
+  "profile": "eggomi",
+  "default": "deny",
+  "allow": [
+    {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "PrepareUse"
+    },
+    {
+      "caller_role": "omi-runner",
+      "callee": "keeper-core",
+      "method": "QueryOutcome"
+    },
+    {
+      "caller_role": "credential-broker",
+      "callee": "keeper-core",
+      "method": "ResolveUseGrant"
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "credential-broker",
+      "method": "CompleteFill"
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "keeper-core",
+      "method": "ReportOutcome"
+    },
+    {
+      "caller_role": "browser-guard",
+      "callee": "keeper-core",
+      "method": "QueryOutcome"
+    }
+  ]
+}

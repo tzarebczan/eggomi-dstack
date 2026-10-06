@@ -77,6 +77,16 @@ L1 form.
 3. Search browser disk and checkpoints for the raw secret; no copy may exist.
 4. Require expired material to fail.
 
+The host-native stand-in is CAH `fill-v1` under `test-suites/cah` (retired
+alias J06, WS-SIM06 `browser-signin`, evidence class `process_e2e`). It shows
+one successful fill. A wrong role is refused by the access graph before the
+grant is checked, and that grant stays issued. A second admitted
+`browser-guard` that presents the copied grant reference is refused at
+resolve (`denied_recipient`); that is a separate check, and the grant stays
+issued until the bound recipient fills. A changed boot id is refused.
+Evidence is E1. The disk and checkpoint search above stays open. See
+[docs/cah](../cah/README.md).
+
 ### S5: activity and metrics
 
 Run a configurable mix of:
@@ -125,5 +135,6 @@ release a key.
   production verification code.
 - [x] S1 checks outer encrypted-disk/application-volume and swtpm persistence.
 - [x] S6 exposes measurement-mismatch and production-root rejection hooks.
+- [x] CAH host-native `fill-v1` exercises keeper, broker, and browser-guard stubs (E1).
 - [ ] Run S0/S1 on an L1 host with `/dev/kvm`, swtpm, and a development image.
 - [ ] Implement smolvm S3/S4 and activity S5 in the later milestone.
