@@ -56,9 +56,9 @@ compartment ports.
 | --- | --- |
 | RPC | 4-byte big-endian length plus UTF-8 JSON, maximum 1 MiB. Responses are `{ok, code, body}`. Errors use an empty body. |
 | Addresses | `unix:<path>` and `tcp:<host>:<port>`. Servers bind `tcp` on `127.0.0.1:0` and publish the chosen address in `ready/<role>`. |
-| Unix identity | `SO_PEERCRED` pid, uid must equal the server uid, pid must be in the admission registry. |
+| Unix identity | `SO_PEERPIDFD` (constant 77). No `SO_PEERCRED` fallback. pid and start time only gate setup. The keyed channel then proves the registered X25519 key. uid must equal the server uid. |
 | Lab mTLS | TLS 1.3, client certificates required, session tickets disabled. Hostname check is off because the SPIFFE URI SAN is the identity. The mTLS broker path is `vsock.placeholder(cid=3, port=5200)`, label `vsock:3:5200`. `open_vsock()` raises `VsockUnavailable`. `AF_VSOCK` is not opened. |
-| Access graph | `test-suites/cah/profiles/eggomi/service-access.json` (`service-access/v1`, default deny, one-use scoped `AdmitWorkload`). |
+| Access graph | `test-suites/cah/profiles/eggomi/service-access.json` (`service-access/v1`, default deny). Admission is a launcher write, not a keeper method. |
 | Use-grant | `workload-use-grant/v1`. Wire value is an opaque hex reference. Server-side binding is requester, recipient possession, policy, destination, task, and lease. Example: `test-suites/cah/examples/workload-use-grant.json`. A null fingerprint in an old example is not a skip. |
 | Service-access map | Runtime graph stays `service-access/v1`. `profiles/eggomi/service-access-map.json` names each edge's WS1 counterpart or an explicit deviation. |
 | Experiment record | `test-suites/cah/examples/experiment.json` is `cah-experiment/v1` for this harness. It is not a claim that a run satisfied `contracts/ws1/experiment.schema.json`. |
@@ -66,10 +66,11 @@ compartment ports.
 | Outer substrate | `test-suites/eggomi/scripts/s0-sim-smoke.sh`, `s1-persistence.sh`, `s6-faults.sh`. `test-suites/cah/scripts/cah-launch.sh` calls S0 only in outer mode. |
 | Fill | `python3 -m cah.demo`. Report schema `cah-run-report/v1`. |
 
-Methods implemented on the servers: `PrepareUse` and `ResolveUseGrant`,
-`ReportOutcome`, and `AdmitWorkload` on `keeper-core`; `CompleteFill` on
+Methods implemented on the servers: `PrepareUse`, `ResolveUseGrant`,
+`ReportOutcome`, and `QueryOutcome` on `keeper-core`; `CompleteFill` on
 `credential-broker`. `connector` has an empty method table, so an admitted
-caller still receives `denied_role`.
+caller still receives `denied_role`. The launcher admits a scoped instance
+with `admit_scoped` and does not call keeper to do it.
 
 ## Scenario aliases
 

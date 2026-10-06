@@ -26,12 +26,12 @@ mount, egress, key inventory, and gates G0–G5 are in the
 
 | Role | This repo | Eggomi path (unverified) | Evidence | Owner | Gap |
 | --- | --- | --- | --- | --- | --- |
-| keeper-core | `cah` server, `PrepareUse`, `ResolveUseGrant`, `ReportOutcome`, `AdmitWorkload` | `infra/dstack` hostd stub; `apps/desktop/src/keeper`. In-flight PRs #657, #661, #662, #664, #666, #668, #676 | E1 / `process_e2e` | CAH on this mirror; Eggomi keeper later | Policy is keeper-owned. No `get_secret`. No live keeper checkpoint-as-scaling. |
+| keeper-core | `cah` server, `PrepareUse`, `ResolveUseGrant`, `ReportOutcome`, `QueryOutcome` | `infra/dstack` hostd stub; `apps/desktop/src/keeper` | E1 / `process_e2e` | CAH on this mirror; Eggomi keeper later | Policy is keeper-owned and loaded per call. No `get_secret`. No live keeper checkpoint-as-scaling. No `AdmitWorkload`. |
 | credential-broker | `cah` server, `CompleteFill` after keeper resolve | No compose service by this name. Egress stays a separate role. | E1 | CAH | Fill release is the stub broker. Egress policy is untouched. |
 | browser-guard | Fill client | `infra/dstack` browser | E1 | CAH | Process is host-native. It is not inside the browser workload or gVisor. |
 | omi-runner | `PrepareUse` client | Planned agent loop | E1 | CAH | Requests a grant. Does not run a model. |
 | connector | Server with no allow edge | Matrix / stealth paths mentioned beside `infra/dstack` | E1 refusal | CAH | `denied_role` only. No bridge. |
-| platform-launcher | Scoped `AdmitWorkload` client | Compose / host launcher | E1 | CAH | One-use scope file. SPIRE is deferred. |
+| platform-launcher | In-process scoped registry write | Compose / host launcher | E1 | CAH | One-use scope file. SPIRE is deferred. Keeper does not expose admission. |
 | data-service | Not started | — | — | Later | No process. |
 | matrix-device | Not started | PR #668 described as matrix-bridge narrowing | — | Eggomi | No process. |
 | workbench | Not started | `infra/dstack` workbench / gVisor | — | Eggomi | No process. |

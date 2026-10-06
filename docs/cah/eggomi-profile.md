@@ -22,7 +22,7 @@ browser, egress, a hostd stub, workbench/gVisor, stealth/Tor, probes, and
 | browser-guard | `infra/dstack` browser | `CompleteFill` to the broker, then `ReportOutcome` to keeper. |
 | credential-broker | New neighbor beside egress | Resolves a use-grant with keeper and returns the fill. Egress allowlists stay on the egress role. |
 | omi-runner | Agent loop when it exists | `PrepareUse` only. |
-| platform-launcher | The process that starts the compose stack | `AdmitWorkload` with a one-use scope file. |
+| platform-launcher | The process that starts the compose stack | In-process one-use scope write. Keeper has no `AdmitWorkload`. |
 | connector | Matrix or stealth compartments | No allow edge until `service-access.json` grows one. |
 
 The profile does not replace `compose.lab.yaml` and does not add a parallel
@@ -44,10 +44,13 @@ a SPIFFE URI that the same registry already understands).
 
 The bytes on the wire are an opaque reference. `omi-runner` receives that
 reference from `PrepareUse` and the bound browser presents it to
-`CompleteFill`. Origin and destination come from the keeper policy. Keeper
-binds the reference to the recipient the broker observed
-(`observed_peer_pid` plus start time, or `observed_fingerprint`). A missing
-fingerprint does not skip that check.
+`CompleteFill`. Origin, audience, field, tenant, and destination come from
+the keeper policy. The record also stores those bindings. Resolve identifies
+the guard by a possession proof of its lease key, not by `observed_*`
+fields. A missing fingerprint does not skip that check. The resolve body is
+one sealed credential (`cah-sealed-answer/v1`). The broker does not hold the
+plaintext. The fill canary lives in `authority/fill-secret`, which confined
+processes cannot read.
 
 An `omi-runner` request to the broker is `denied_role` on the access graph.
 That is not the copied-grant check. A second admitted `browser-guard` that
@@ -55,11 +58,14 @@ presents the same reference is `denied_recipient` at resolve, and the grant
 stays `issued` for the bound recipient. A certificate-fingerprint change is
 a rebind, with or without a pid: `boot_generation` advances and that
 instance's issued grants are revoked. Binding the previous fingerprint again
-does not restore them. A boot-generation mismatch is terminal `revoked_boot`.
+does not restore them. A boot-generation mismatch is terminal `denied_boot`.
+`ReportOutcome` accepts `filled`, `refused`, or `unknown`. `QueryOutcome`
+returns that record to the same recipient.
 
 ## Limits of this profile
 
-The synthetic fill is passed to the broker on stdin. It is a lab canary.
+The synthetic fill is a lab canary sealed to the guard. The broker stdin
+path is gone.
 Disk and checkpoint searches from test plan S4 are still open, because these
 processes are not smolvm guests.
 

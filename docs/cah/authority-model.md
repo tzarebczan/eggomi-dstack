@@ -14,11 +14,15 @@ APIs are historical sketch text, not the model this stack runs.
 
 ## Who chooses authority
 
-`PrepareUse` may repeat origin, resource handle, policy revision, lease, and
-recipient. Keeper compares that echo to `cah-keeper-policy/v1` in the keeper
-authority directory. A mismatch, including an origin the requester invented,
+`PrepareUse` may repeat origin, resource handle, policy revision, lease,
+audience, field, tenant, and recipient. Keeper loads the current
+`cah-keeper-policy/v1` revision from its private directory on that call.
+Nothing is cached. A mismatch, including an origin the requester invented,
 is `denied_payload` and stores no grant. Frame id and navigation generation
-are taken from the policy, not from the omi body.
+are taken from the policy, not from the omi body. Admission does not read
+the policy directory. The launcher does not install the profile fixture as
+the live authority file. A test double calls `publish_revision` to simulate
+the keeper write.
 
 The runtime allow graph stays `service-access/v1`. The mapping to
 `eggomi/workload-service-access/v1` is
@@ -29,15 +33,18 @@ explicit deviations and are not silent replacements of the WS1 file:
 | --- | --- |
 | `credential-broker` → keeper `ResolveUseGrant` | keeper → broker `AuthorizeUse` |
 | browser → keeper `ReportOutcome` | keeper → browser `ExecuteBrowserOperation` |
-| launcher → keeper `AdmitWorkload` | launcher → identity-service `IssueForVerifiedLaunch` |
+| browser → keeper `QueryOutcome` | WS1 has no separate outcome query |
+| launcher writes the registry in-process | launcher → identity-service `IssueForVerifiedLaunch` |
 
 The opaque grant stays in keeper. The broker asks keeper to consume it.
 
 ## Recipient binding
 
-A grant is issued only when the recipient already has a certificate
-fingerprint or a pid plus `/proc/<pid>/stat` start time. Resolve checks every
-proof that was stored. A null fingerprint does not skip the check.
+A grant is issued only when the recipient already has a channel public key,
+a certificate fingerprint, or a pid plus start time. Resolve identifies the
+presenter by a possession proof over the guard's lease key, then checks the
+registry row for that key. Body fields named `observed_*` are refused.
+A null fingerprint does not skip the check.
 
 A second admitted `browser-guard` that presents a copied `grant_ref` is
 `denied_recipient` at resolve. The grant stays issued for the bound
@@ -51,12 +58,17 @@ which records a fingerprint or a pid on a row that has neither, does not
 advance the generation. Repeating the same fingerprint on that empty row does
 not either. `set_boot` accepts only a boot id that is not already in
 `boot_history`. Repeating an older id raises `BootRollback`. A generation
-mismatch on resolve is terminal `revoked_boot`. Returning to an earlier
-fingerprint does not revive a grant that the rebind revoked.
+mismatch on resolve is terminal `denied_boot`. Returning to an earlier
+fingerprint does not revive a grant that the rebind revoked. `denied_boot`
+is the only wire code for that outcome.
 
-`CompleteFill` sends `frame_id` and `navigation_generation`. Keeper compares
-them to `destination_binding`. A mismatch is `denied_payload` and does not
-consume the grant.
+`CompleteFill` carries a proof and the live frame. Keeper compares frame and
+navigation to `destination_binding`. A mismatch is `denied_payload` and does
+not consume the grant. On success the answer is one sealed credential. The
+broker forwards it and does not hold the plaintext. The guard rebuilds the
+associated data from its lease, its registry row, and the operation it is
+running. Expiry is a guard monotonic offset of at most 30 seconds from a
+challenge the guard issued. The keeper's `expires_mono` is not that check.
 
 ## Consumption survives reload
 
