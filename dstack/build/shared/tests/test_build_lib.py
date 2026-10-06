@@ -278,6 +278,7 @@ class CloneScriptTests(unittest.TestCase):
     """The image clone must authenticate without putting the token in argv."""
 
     def setUp(self):
+        """Stage a fake git and a writable work directory."""
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.work = Path(self.tmp.name)
@@ -341,6 +342,7 @@ class CloneScriptTests(unittest.TestCase):
         }
 
     def run_clone(self):
+        """Run clone-dstack-src.sh against the fake git."""
         return subprocess.run(
             ["bash", str(ROOT / "dstack/build/shared/clone-dstack-src.sh")],
             cwd=self.work,
@@ -350,6 +352,7 @@ class CloneScriptTests(unittest.TestCase):
         )
 
     def test_token_is_basic_auth_and_not_in_argv(self):
+        """A mounted token is sent as Basic auth and stays out of git argv."""
         secret = self.work / "github_token"
         secret.write_text("test-token\n")
         self.env["DSTACK_CLONE_SECRET_FILE"] = str(secret)
@@ -361,6 +364,7 @@ class CloneScriptTests(unittest.TestCase):
         self.assertIn("clone", logged)
 
     def test_public_clone_stays_anonymous(self):
+        """No secret file means the clone does not set an auth header."""
         self.env["DSTACK_CLONE_SECRET_FILE"] = str(self.work / "missing-token")
         self.env["EXPECT_AUTH"] = ""
         result = self.run_clone()
