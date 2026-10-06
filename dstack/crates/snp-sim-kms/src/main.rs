@@ -48,9 +48,12 @@ enum Command {
         #[arg(long)]
         vm_config: PathBuf,
     },
-    /// Ask the production SNP verifier about one guest attestation. Exits 0
-    /// only when production roots refuse it.
+    /// Check one guest attestation against both trust roots. Exits 0 only when
+    /// the job's mock root accepts it (so the collateral and report are
+    /// sound) and the production AMD roots refuse it.
     ProductionGate {
+        #[command(flatten)]
+        seed: SeedArgs,
         /// File holding the hex attestation from the guest's /Attest.
         #[arg(long)]
         attestation: PathBuf,
@@ -141,10 +144,11 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::ProductionGate {
+            seed,
             attestation,
             report_data,
             kds_url,
-        } => production_gate(&attestation, &report_data, &kds_url).await,
+        } => production_gate(&seed, &attestation, &report_data, &kds_url).await,
         Command::VerifyRelease {
             seed,
             bootstrap,
@@ -296,19 +300,42 @@ fn error(status: StatusCode, reason: &str) -> Reply {
     (status, Json(json!({ "refused": true, "error": reason })))
 }
 
-async fn production_gate(attestation: &Path, report_data: &str, kds_url: &str) -> Result<()> {
+async fn production_gate(
+    seed: &SeedArgs,
+    attestation: &Path,
+    report_data: &str,
+    kds_url: &str,
+) -> Result<()> {
     let raw = std::fs::read_to_string(attestation)
         .with_context(|| format!("failed to read {}", attestation.display()))?;
     let evidence =
         evidence_from_attestation(&hex::decode(raw.trim()).context("attestation is not hex")?)?;
     let report_data = decode_fixed::<64>("report_data", report_data)?;
     let kds = AmdKdsClient::with_base_url(kds_url)?;
-    match LabSnpKms::production_gate_fetching_collateral(&kds, &evidence, &report_data).await {
-        Ok(never) => match never {},
+    // The mock root must accept the same bytes and collateral first. Without
+    // this, a collateral outage or a malformed report would read as a
+    // production-root rejection.
+    let ark = SimTsm::from_seed(load_seed(seed)?)?.ark_pem().into_bytes();
+    sev_snp_qvl::QuoteVerifier::new(ark.clone(), ark.clone(), ark)
+        .fetch_and_verify(&kds, &evidence.report, &evidence.cert_chain, &report_data)
+        .await
+        .context("the mock root does not accept this evidence; the check proves nothing")?;
+    match sev_snp_qvl::QuoteVerifier::new_prod()
+        .fetch_and_verify(&kds, &evidence.report, &evidence.cert_chain, &report_data)
+        .await
+    {
+        Ok(_) => bail!("production AMD roots accepted simulated evidence"),
         Err(err) => {
+            // The lab KMS gate refuses unconditionally as well.
+            let gate = LabSnpKms::production_gate(&evidence, &report_data);
             println!(
                 "{}",
-                json!({ "production_root_rejected": true, "reason": format!("{err:#}") })
+                json!({
+                    "development_root_accepted": true,
+                    "production_root_rejected": true,
+                    "production_gate_refused": gate.is_err(),
+                    "reason": format!("{err:#}"),
+                })
             );
             Ok(())
         }

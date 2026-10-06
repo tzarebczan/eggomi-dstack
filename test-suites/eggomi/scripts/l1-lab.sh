@@ -39,23 +39,23 @@ init() {
   local target=${CARGO_TARGET_DIR:-"$LAB/target"}
   mkdir -p "$LAB/logs" "$LAB/image" "$LAB/state" "$VMM_DIR/run" "$VMM_DIR/vm"
   [[ ! -e "$LAB/env.sh" ]] || die "$LAB/env.sh exists; remove it to re-initialise"
-  cat >"$LAB/env.sh" <<EOF
-# Eggomi L1 simulated-SNP lab. Source this file before running the harness.
-export LAB=$LAB
-export CARGO_TARGET_DIR=$target
-export EGGOMI_STATE_DIR=\$LAB/state
-export EGGOMI_VM_DIR=\$LAB/vmm/vm
-export EGGOMI_COLLATERAL_PORT=$service_base
-export EGGOMI_COLLATERAL_URL=http://10.0.2.2:$service_base
-export EGGOMI_KMS_PORT=$((service_base + 1))
-export EGGOMI_APP_PORT=$port_base
-export EGGOMI_S2_PORT=$((port_base + 1))
-export EGGOMI_DEV_IMAGE=$image
-export MOCK_ATTESTATION_BIN=\$CARGO_TARGET_DIR/release/dstack-mock-attestation
-export SNP_SIM_KMS_BIN=\$CARGO_TARGET_DIR/release/snp-sim-kms
-export DSTACK_VMM_URL=unix:\$LAB/vmm/vmm.sock
-export DSTACK_VMM_CLI=$ROOT/dstack/vmm/src/vmm-cli.py
-EOF
+  {
+    echo "# Eggomi L1 simulated-SNP lab. Source this file before running the harness."
+    printf 'export LAB=%q\n' "$LAB"
+    printf 'export CARGO_TARGET_DIR=%q\n' "$target"
+    echo 'export EGGOMI_STATE_DIR="$LAB/state"'
+    echo 'export EGGOMI_VM_DIR="$LAB/vmm/vm"'
+    printf 'export EGGOMI_COLLATERAL_PORT=%q\n' "$service_base"
+    printf 'export EGGOMI_COLLATERAL_URL=%q\n' "http://10.0.2.2:$service_base"
+    printf 'export EGGOMI_KMS_PORT=%q\n' "$((service_base + 1))"
+    printf 'export EGGOMI_APP_PORT=%q\n' "$port_base"
+    printf 'export EGGOMI_S2_PORT=%q\n' "$((port_base + 1))"
+    printf 'export EGGOMI_DEV_IMAGE=%q\n' "$image"
+    echo 'export MOCK_ATTESTATION_BIN="$CARGO_TARGET_DIR/release/dstack-mock-attestation"'
+    echo 'export SNP_SIM_KMS_BIN="$CARGO_TARGET_DIR/release/snp-sim-kms"'
+    echo 'export DSTACK_VMM_URL="unix:$LAB/vmm/vmm.sock"'
+    printf 'export DSTACK_VMM_CLI=%q\n' "$ROOT/dstack/vmm/src/vmm-cli.py"
+  } >"$LAB/env.sh"
   load_env
   if [[ ! -s "$EGGOMI_STATE_DIR/mock-roots/tee-simulator.json" ]]; then
     "$ROOT/test-suites/eggomi/scripts/mock-collateral.sh" generate

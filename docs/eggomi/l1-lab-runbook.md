@@ -24,7 +24,9 @@ Everything lives under one lab directory, `EGGOMI_LAB_DIR`, which defaults to
 | `*.pid` | collateral and KMS pid files; the VMM pid is `vmm/vmm.pid` |
 
 `test-suites/eggomi/scripts/l1-lab.sh` drives the lab. Every command below
-assumes `. "$EGGOMI_LAB_DIR/env.sh"` and `LAB=test-suites/eggomi/scripts/l1-lab.sh`.
+runs from the checkout and assumes `. "$EGGOMI_LAB_DIR/env.sh"` and
+`LABCTL=test-suites/eggomi/scripts/l1-lab.sh`. `env.sh` sets `LAB` to the lab
+directory, so do not use that name for the script.
 
 ## Ports, CIDs, and sockets
 
@@ -80,13 +82,13 @@ It must report `"is_dev": true` and include `measurement.snp.cbor`. On btrfs,
 ## Start
 
 ```bash
-$LAB init              # once: env.sh, job seed and mock roots, vmm.toml
+$LABCTL init              # once: env.sh, job seed and mock roots, vmm.toml
 . "$EGGOMI_LAB_DIR/env.sh"
-$LAB start             # dstack-vmm under setsid; it starts its supervisor
-$LAB start-collateral  # mock AMD-KDS endpoints for the job seed
+$LABCTL start             # dstack-vmm under setsid; it starts its supervisor
+$LABCTL start-collateral  # mock AMD-KDS endpoints for the job seed
 ./test-suites/eggomi/scripts/s0-sim-smoke.sh
-$LAB start-kms         # lab KMS enrolled to the S0 VM, release gate open
-$LAB status
+$LABCTL start-kms         # lab KMS enrolled to the S0 VM, release gate open
+$LABCTL status
 ```
 
 The VMM, collateral server, and KMS run detached from the shell and survive
@@ -107,7 +109,9 @@ EGGOMI_RUN_S6=false ./test-suites/eggomi/scripts/s0-sim-smoke.sh
 S0, S1, and S2 reuse a collateral server that is already listening on
 `EGGOMI_COLLATERAL_PORT`. That server must have been started from the same
 `state/`, or KMS releases fail closed with a chain error. S2 deploys its own
-VM and removes it when it finishes. Set `EGGOMI_S2_KEEP_VM=true` to keep the
+VM and removes it when it finishes. It starts its own KMS instances on
+`EGGOMI_KMS_PORT`, so stop the standing one first (`$LABCTL stop-kms`) and
+restart it afterwards. S2 refuses to start while that port is in use. Set `EGGOMI_S2_KEEP_VM=true` to keep the
 VM, or set `EGGOMI_S2_VM_ID` to reuse one.
 
 `prod-root-reject` builds a privileged Docker image. Its build cache holds
@@ -128,6 +132,12 @@ deletes one of them. Then run `docker image rm dstack-tests-attestation:local`.
 | S6 `prod-root-unit` | pass |
 | S6 `prod-root-reject` | pass in 120 s, including the Docker build |
 | Nested KVM in guest | **no**: see below |
+
+The production verifier refuses the mock chain at its first certificate
+check. The mock ASK is signed with ECDSA P-384 (`1.2.840.10045.4.3.3`), and
+the built-in AMD path accepts only AMD's own algorithm. `production-gate`
+therefore first requires the job's mock root to accept the same report and
+collateral, so a collateral outage cannot pass as a root rejection.
 
 Guest `MemAvailable` is not collected yet. Lab disk at rest is about 2.5 GB.
 That counts the reflinked image (730 MB of shared extents) and `target/release`
@@ -159,13 +169,13 @@ not a lab setting.
 ## Stop and teardown
 
 ```bash
-$LAB cli stop VM_ID        # graceful guest shutdown; disk and swtpm kept
-$LAB stop-kms
-$LAB stop-collateral
-$LAB stop                  # VMM; stop VMs first
+$LABCTL cli stop VM_ID        # graceful guest shutdown; disk and swtpm kept
+$LABCTL stop-kms
+$LABCTL stop-collateral
+$LABCTL stop                  # VMM; stop VMs first
 ```
 
-`$LAB cli remove VM_ID` deletes a VM's work directory. Full teardown, after
+`$LABCTL cli remove VM_ID` deletes a VM's work directory. Full teardown, after
 removing every VM, is `rm -rf "$EGGOMI_LAB_DIR"`. Nothing outside it is
 created, except the VMM registration under `$XDG_RUNTIME_DIR/dstack-vmm`
 (removed when the VMM exits) and any Docker artifacts from

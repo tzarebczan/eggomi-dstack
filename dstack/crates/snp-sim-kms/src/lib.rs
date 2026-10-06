@@ -319,8 +319,18 @@ impl SignedAppKeyRelease {
     }
 
     /// Check the record's internal bindings and its signature under
-    /// `kms_public`. It does not check the quote; the caller holds that.
+    /// `kms_public`, including that `key` matches `key_commitment`. It does
+    /// not check the quote; the caller holds that.
     pub fn verify(&self, kms_public: &[u8]) -> Result<()> {
+        if key_commitment(&self.key) != self.key_commitment {
+            bail!("released key does not match its commitment");
+        }
+        self.verify_signed_fields(kms_public)
+    }
+
+    /// [`Self::verify`] without the key: every signed field and the signature.
+    /// A keeper that discarded `key` (for example by zeroing it) uses this.
+    pub fn verify_signed_fields(&self, kms_public: &[u8]) -> Result<()> {
         if self.version != SIGNED_RELEASE_VERSION {
             bail!("unsupported release version {}", self.version);
         }
@@ -331,9 +341,6 @@ impl SignedAppKeyRelease {
         }
         if self.kms_public != kms_public {
             bail!("release was signed by a different kms");
-        }
-        if key_commitment(&self.key) != self.key_commitment {
-            bail!("released key does not match its commitment");
         }
         if app_release_report_data(&self.app_id, &self.nonce) != self.report_data {
             bail!("release report_data does not bind the app and nonce");
@@ -1065,6 +1072,12 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("commitment"));
+        // A keeper that zeroes the key still verifies every signed field.
+        let mut dropped = release.clone();
+        dropped.key = [0u8; 32];
+        dropped.verify_signed_fields(&public).unwrap();
+        dropped.key_commitment[0] ^= 1;
+        assert!(dropped.verify_signed_fields(&public).is_err());
         let mut tampered = release.clone();
         tampered.measurement = OTHER_MEASUREMENT;
         assert!(tampered.verify(&public).is_err());

@@ -86,7 +86,7 @@ nonce() {
 }
 
 ensure_collateral() {
-  if curl -fsS "http://127.0.0.1:${COLLATERAL_PORT}/vcek/v1/Milan/cert_chain" >/dev/null 2>&1; then
+  if curl -fsS --max-time 5 "http://127.0.0.1:${COLLATERAL_PORT}/vcek/v1/Milan/cert_chain" >/dev/null 2>&1; then
     log "reusing the mock collateral server on port $COLLATERAL_PORT"
     return
   fi
@@ -94,7 +94,7 @@ ensure_collateral() {
     >"$WORK_DIR/mock-collateral.log" 2>&1 &
   COLLATERAL_PID=$!
   local deadline=$((SECONDS + 30))
-  until curl -fsS "http://127.0.0.1:${COLLATERAL_PORT}/vcek/v1/Milan/cert_chain" >/dev/null 2>&1; do
+  until curl -fsS --max-time 5 "http://127.0.0.1:${COLLATERAL_PORT}/vcek/v1/Milan/cert_chain" >/dev/null 2>&1; do
     kill -0 "$COLLATERAL_PID" 2>/dev/null || die "mock collateral server exited; see $WORK_DIR/mock-collateral.log"
     ((SECONDS < deadline)) || die "mock collateral server did not become ready"
     sleep 1
@@ -106,6 +106,12 @@ start_kms() {
   local label=$1
   shift
   stop_kms
+  # S2 needs its own KMS instances (gate off, gate on, wrong measurement). A
+  # standing lab KMS on the same port would answer the readiness probe while
+  # our child fails to bind.
+  if curl -fsS --max-time 5 "$KMS_URL/health" >/dev/null 2>&1; then
+    die "port $KMS_PORT already serves a KMS; stop it (l1-lab.sh stop-kms) or set EGGOMI_KMS_PORT"
+  fi
   "$KMS_BIN" serve \
     --listen "127.0.0.1:${KMS_PORT}" \
     --mock-config "$MOCK_CONFIG" \
@@ -113,11 +119,12 @@ start_kms() {
     "$@" >"$WORK_DIR/kms-$label.log" 2>&1 &
   KMS_PID=$!
   local deadline=$((SECONDS + 30))
-  until curl -fsS "$KMS_URL/health" -o "$WORK_DIR/kms-$label-health.json" 2>/dev/null; do
+  until curl -fsS --max-time 5 "$KMS_URL/health" -o "$WORK_DIR/kms-$label-health.json" 2>/dev/null; do
     kill -0 "$KMS_PID" 2>/dev/null || die "snp-sim-kms exited; see $WORK_DIR/kms-$label.log"
     ((SECONDS < deadline)) || die "snp-sim-kms did not become ready"
     sleep 0.5
   done
+  kill -0 "$KMS_PID" 2>/dev/null || die "snp-sim-kms exited; see $WORK_DIR/kms-$label.log"
 }
 
 wait_for_boot() {
@@ -200,6 +207,9 @@ main() {
   [[ -s "$MOCK_CONFIG" ]] || skip "run '$SUITE_DIR/scripts/mock-collateral.sh generate' first"
   "${VMM_CLI[@]}" lsvm --json >/dev/null 2>&1 || skip "dstack-vmm is unavailable"
 
+  if curl -fsS --max-time 5 "$KMS_URL/health" >/dev/null 2>&1; then
+    die "port $KMS_PORT already serves a KMS; stop it (l1-lab.sh stop-kms) or set EGGOMI_KMS_PORT"
+  fi
   ensure_collateral
   local started=$SECONDS
   if [[ -n "${EGGOMI_S2_VM_ID:-}" ]]; then
@@ -210,7 +220,7 @@ main() {
   fi
   wait_for_boot "$VM_ID"
   local deadline=$((SECONDS + 300))
-  until curl -fsS "$CLIENT_URL/health" >/dev/null 2>&1; do
+  until curl -fsS --max-time 5 "$CLIENT_URL/health" >/dev/null 2>&1; do
     ((SECONDS < deadline)) || die "guest client did not become reachable on port $CLIENT_PORT"
     sleep 3
   done
@@ -231,7 +241,7 @@ main() {
 
   # Case 2: the gate is open, and the quote matches MEASUREMENT and report_data.
   start_kms release --enroll-vm-config "$simulator" --release-enabled
-  curl -fsS "$KMS_URL/v1/bootstrap" -o "$WORK_DIR/bootstrap.json"
+  curl -fsS --max-time 30 "$KMS_URL/v1/bootstrap" -o "$WORK_DIR/bootstrap.json"
   local release_nonce
   release_nonce=$(nonce)
   request release "app_id=$APP_ID&nonce=$release_nonce"
@@ -240,7 +250,7 @@ main() {
   jq '.kms' "$WORK_DIR/release.json" >"$WORK_DIR/signed-release.json"
   jq -r '.attestation' "$WORK_DIR/release.json" >"$WORK_DIR/release-attestation.hex"
   local expected_rd
-  expected_rd=$(curl -fsS "$KMS_URL/v1/report-data?app_id=$APP_ID&nonce=$release_nonce" | jq -r '.report_data')
+  expected_rd=$(curl -fsS --max-time 30 "$KMS_URL/v1/report-data?app_id=$APP_ID&nonce=$release_nonce" | jq -r '.report_data')
   jq -e --arg rd "$expected_rd" '.report_data == $rd' "$WORK_DIR/release.json" >/dev/null \
     || die "guest client and KMS disagree on report_data"
   jq -e '(.measurement | length) == 48 and .simulated == true and .production_accepted == false' \
@@ -259,7 +269,7 @@ main() {
   jq -n --arg app "$APP_ID" --arg nonce "$(nonce)" --rawfile att "$WORK_DIR/release-attestation.hex" \
     '{app_id: $app, nonce: $nonce, attestation: ($att | rtrimstr("\n"))}' >"$WORK_DIR/replay-request.json"
   local replay_status
-  replay_status=$(curl -sS -o "$WORK_DIR/replay-kms.json" -w '%{http_code}' \
+  replay_status=$(curl -sS --max-time 120 -o "$WORK_DIR/replay-kms.json" -w '%{http_code}' \
     -H 'Content-Type: application/json' --data @"$WORK_DIR/replay-request.json" "$KMS_URL/v1/release")
   jq -n --argjson status "$replay_status" --slurpfile kms "$WORK_DIR/replay-kms.json" \
     '{kms_status: $status, kms: $kms[0], attestation: "recorded"}' >"$WORK_DIR/replay.json"
@@ -274,10 +284,12 @@ main() {
 
   # Case 4: production AMD roots refuse the evidence the release used.
   "$KMS_BIN" production-gate \
+    --mock-config "$MOCK_CONFIG" \
     --attestation "$WORK_DIR/release-attestation.hex" \
     --report-data "$expected_rd" \
     --kds-url "$KDS_URL" | tee "$WORK_DIR/production-gate.json"
-  jq -e '.production_root_rejected == true' "$WORK_DIR/production-gate.json" >/dev/null \
+  jq -e '.development_root_accepted == true and .production_root_rejected == true
+    and .production_gate_refused == true' "$WORK_DIR/production-gate.json" >/dev/null \
     || die "production roots did not refuse the simulated evidence"
   log "prod-roots: production AMD roots refused the release evidence"
 
