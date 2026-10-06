@@ -5,19 +5,30 @@
     "role": "omi-runner",
     "instance_id": "omi-1",
     "boot_id": "boot-omi-1",
-    "cert_fingerprint": null
+    "boot_generation": 1,
+    "cert_fingerprint": "sha256:requester-possession",
+    "pid": null,
+    "starttime": null
   },
   "recipient": {
     "role": "browser-guard",
     "instance_id": "browser-1",
     "boot_id": "boot-browser-1",
-    "cert_fingerprint": null
+    "boot_generation": 1,
+    "cert_fingerprint": "sha256:recipient-possession",
+    "pid": null,
+    "starttime": null
   },
   "policy": {
     "revision": "pol-lab-1",
     "method": "CompleteFill",
     "resource_handle": "cred-lab-1",
     "origin": "https://lab.invalid/signin"
+  },
+  "destination_binding": {
+    "origin": "https://lab.invalid/signin",
+    "document_generation": "nav-1",
+    "frame_binding": "frame-1"
   },
   "task": {
     "task_id": "task-lab-1",
@@ -27,6 +38,7 @@
     "lease_id": "lease-lab-1",
     "epoch": 1,
     "use_limit": 1,
+    "ttl_seconds": 60,
     "expires_unix": 0
   },
   "disposition": "issued",

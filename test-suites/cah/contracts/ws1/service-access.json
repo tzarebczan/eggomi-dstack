@@ -1,0 +1,374 @@
+{
+  "schema_version": "eggomi/workload-service-access/v1",
+  "status": "proposed_not_executed",
+  "default": "deny",
+  "roles": [
+    "keeper-authority",
+    "credential-broker",
+    "data-service",
+    "connector",
+    "matrix-device",
+    "omi-worker",
+    "browser-guard",
+    "workbench",
+    "artifact-service",
+    "model-egress",
+    "launcher",
+    "identity-service",
+    "metering-agent"
+  ],
+  "global_requirements": [
+    "mTLS workload identity or approved same-compartment peer check",
+    "verified tenant/instance/boot",
+    "accepted release",
+    "current policy and operation scope",
+    "no owner approval from workloads"
+  ],
+  "allowed_edges": [
+    {
+      "caller": "omi-worker",
+      "callee": "data-service",
+      "method": "QueryRecords",
+      "condition": "Current source/record scope, bounded result and coverage; no raw SQL"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "data-service",
+      "method": "SubscribeChanges",
+      "condition": "Committed cursor, current source scope, bounded stream and revocation"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "keeper-authority",
+      "method": "PrepareAction",
+      "condition": "Immutable turn ceiling and stable operation identity; no authority created by model text"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "keeper-authority",
+      "method": "DispatchApprovedAction",
+      "condition": "Existing dispatcher performs exact-payload approval/lease validation; Omi does not sign approval"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "keeper-authority",
+      "method": "ReadOutcome",
+      "condition": "Same tenant/task scope; absence is not proof of no effect"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "keeper-authority",
+      "method": "ReconcileOutcome",
+      "condition": "Read-only provider reconciliation under the existing operation"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "keeper-authority",
+      "method": "RequestComputer",
+      "condition": "Accepted task/template/resource class only; no arbitrary mounts or policy"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "keeper-authority",
+      "method": "PrepareSignIn",
+      "condition": "Opaque saved account handle and authorized task/browser binding; no secret returned"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "launcher",
+      "method": "LaunchAcceptedWorkload",
+      "condition": "Owner-accepted release, committed tenant/task/connection grant and immutable manifest"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "launcher",
+      "method": "DrainOrDestroy",
+      "condition": "Exact owned instance/boot, preserve effects and accepted outputs"
+    },
+    {
+      "caller": "launcher",
+      "callee": "identity-service",
+      "method": "IssueForVerifiedLaunch",
+      "condition": "Attested/accepted parent, verified guest mapping and restricted registration; no self labels"
+    },
+    {
+      "caller": "identity-service",
+      "callee": "launcher",
+      "method": "VerifyLaunchBinding",
+      "condition": "Exact precommitted launch/key/boot identity; bounded read-only verification"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "credential-broker",
+      "method": "AuthorizeUse",
+      "condition": "Current delegation, operation, recipient key, purpose and approved scope"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "credential-broker",
+      "method": "ExecuteProviderOperation",
+      "condition": "Typed current-account operation through existing effect/issuance ledger"
+    },
+    {
+      "caller": "browser-guard",
+      "callee": "credential-broker",
+      "method": "ConsumeFill",
+      "condition": "Recipient key/boot, document/frame generation, exact origin/field, operation and profile lease"
+    },
+    {
+      "caller": "connector",
+      "callee": "credential-broker",
+      "method": "OpenOwnSession",
+      "condition": "Only current owned provider session; SDK-specific release and rotation contract"
+    },
+    {
+      "caller": "connector",
+      "callee": "keeper-authority",
+      "method": "CommitIngestion",
+      "condition": "Recoverable archive/protocol linkage and real SDK acknowledgement boundary"
+    },
+    {
+      "caller": "connector",
+      "callee": "data-service",
+      "method": "PublishProviderRecords",
+      "condition": "Own connection/account source, versioned records and ingestion reference"
+    },
+    {
+      "caller": "matrix-device",
+      "callee": "data-service",
+      "method": "PublishMatrixProjection",
+      "condition": "Own authorized Matrix device/source; no external provider authority"
+    },
+    {
+      "caller": "matrix-device",
+      "callee": "keeper-authority",
+      "method": "SubmitPortalIntent",
+      "condition": "Authenticated supported human provenance, loop suppression, one dispatcher"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "browser-guard",
+      "method": "ExecuteBrowserOperation",
+      "condition": "Current operation/profile/boot lease, exact resource and approval where required"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "workbench",
+      "method": "ExecuteTask",
+      "condition": "Selected files and accepted network/resource policy; no arbitrary keeper mount"
+    },
+    {
+      "caller": "browser-guard",
+      "callee": "artifact-service",
+      "method": "StageArtifact",
+      "condition": "Task-scoped output bytes, size/type cap and encrypted staging"
+    },
+    {
+      "caller": "workbench",
+      "callee": "artifact-service",
+      "method": "StageArtifact",
+      "condition": "Task-scoped output bytes, size/type cap and encrypted staging"
+    },
+    {
+      "caller": "browser-guard",
+      "callee": "artifact-service",
+      "method": "ReadTaskInput",
+      "condition": "Only granted profile/file version under active lease"
+    },
+    {
+      "caller": "workbench",
+      "callee": "artifact-service",
+      "method": "ReadTaskInput",
+      "condition": "Only granted file version; never browser profile"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "artifact-service",
+      "method": "PromoteArtifact",
+      "condition": "Checked complete object, hashes, ownership, lease generation and durable manifest"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "model-egress",
+      "method": "Infer",
+      "condition": "Fixed permitted route, source-authorized context, bounded response and no hidden fallback"
+    },
+    {
+      "caller": "model-egress",
+      "callee": "credential-broker",
+      "method": "ExecuteModelRequest",
+      "condition": "Broker-owned provider authentication and generation; returns inference not credential"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "data-service",
+      "method": "CommitAuthorizedChange",
+      "condition": "Existing journal/transaction/policy; not an unrestricted SQL tunnel"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "connector",
+      "method": "ExecuteProviderOperation",
+      "condition": "Exact current session/account operation through the existing dispatcher; no parallel provider owner"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "matrix-device",
+      "method": "ExecuteNativeAction",
+      "condition": "Actual Matrix device restriction and current operation scope; no account-control bypass"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "data-service",
+      "method": "InitializeOperationalStore",
+      "condition": "One authorized recipient boot; data key only; no owner or credential-store material"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "credential-broker",
+      "method": "InitializeCustody",
+      "condition": "One authorized custody boot; operational credential store only; no owner roots"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "matrix-device",
+      "method": "InitializeOwnDevice",
+      "condition": "Restricted own device material only; no owner cross-signing or backup recovery root"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "artifact-service",
+      "method": "InitializeArtifactCustody",
+      "condition": "Scoped artifact key/manifest authority for accepted tenant boot"
+    },
+    {
+      "caller": "credential-broker",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "data-service",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "connector",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "matrix-device",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "browser-guard",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "workbench",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "artifact-service",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "model-egress",
+      "callee": "keeper-authority",
+      "method": "ReadPolicyStatus",
+      "condition": "Only own current tenant/role/task scope; no authority mutation or unrelated enumeration"
+    },
+    {
+      "caller": "keeper-authority",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "credential-broker",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "data-service",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "connector",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "matrix-device",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "omi-worker",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "browser-guard",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "workbench",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "artifact-service",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "model-egress",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "launcher",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    },
+    {
+      "caller": "identity-service",
+      "callee": "metering-agent",
+      "method": "RecordAllowlistedEvent",
+      "condition": "Fixed bounded schema; tenant attribution from trusted channel mapping; no private content"
+    }
+  ],
+  "prohibited_generic_methods": [
+    "GetSecret",
+    "SignAnyBytes",
+    "AuthenticatedFetchAnyURL",
+    "MountAnyPath",
+    "ExecuteSQL",
+    "IssueIdentityFromCallerLabels"
+  ],
+  "mapping_note": "Logical method names map to landed predecessor interfaces in W0; this is not a second RPC implementation."
+}

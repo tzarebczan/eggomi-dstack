@@ -1,0 +1,40 @@
+{
+  "schema_version": "cah-keeper-policy/v1",
+  "policy_revision": "pol-lab-1",
+  "credentials": {
+    "cred-lab-1": {
+      "origins": ["https://lab.invalid/signin"],
+      "method": "CompleteFill"
+    }
+  },
+  "leases": {
+    "browser-1": {
+      "lease_id": "lease-lab-1",
+      "epoch": 1,
+      "role": "browser-guard"
+    }
+  },
+  "operations": {
+    "op-positive": {
+      "task_id": "task-lab-1",
+      "resource_handle": "cred-lab-1",
+      "recipient_instance_id": "browser-1",
+      "frame_id": "frame-1",
+      "navigation_generation": "nav-1"
+    },
+    "op-copied": {
+      "task_id": "task-lab-1",
+      "resource_handle": "cred-lab-1",
+      "recipient_instance_id": "browser-1",
+      "frame_id": "frame-1",
+      "navigation_generation": "nav-1"
+    },
+    "op-boot": {
+      "task_id": "task-lab-1",
+      "resource_handle": "cred-lab-1",
+      "recipient_instance_id": "browser-1",
+      "frame_id": "frame-1",
+      "navigation_generation": "nav-1"
+    }
+  }
+}

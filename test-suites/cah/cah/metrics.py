@@ -176,24 +176,25 @@ def validate_record(record: Dict[str, Any], schema: Dict[str, Any]) -> None:
 
 
 def sum_present(records: List[Dict[str, Any]], metric_id: str) -> Optional[float]:
-    """Sum present values for one metric.
+    """Sum present values for one metric inside one scope and role.
 
-    Unavailable rows are skipped. If every row is unavailable the result is
-    ``None``, which is not zero.
+    Rows for other metrics are ignored. A mix of ``measurement_scope`` or
+    ``role`` for this metric is refused. If any selected row is unavailable,
+    the result is ``None`` rather than a partial total. ``None`` is not zero.
     """
+    selected = [record for record in records if record["metric_id"] == metric_id]
+    if not selected:
+        return None
+    identities = {(record["measurement_scope"], record["role"]) for record in selected}
+    if len(identities) > 1:
+        raise MeasurementError("refusing to sum a metric across scopes or roles")
     total = 0.0
-    seen = False
-    for record in records:
-        if record["metric_id"] != metric_id:
-            continue
+    for record in selected:
         if record["origin"] == "unavailable":
             if record["value"] is not None:
                 raise MeasurementError("refusing to skip a non-null unavailable value")
-            continue
+            return None
         total += float(record["value"])
-        seen = True
-    if not seen:
-        return None
     return total
 
 

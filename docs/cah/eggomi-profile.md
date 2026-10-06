@@ -36,16 +36,24 @@ a SPIFFE URI that the same registry already understands).
 
 `examples/workload-use-grant.json` shows the server-side record:
 
-- requester and recipient, each with role, instance, boot, and certificate fingerprint
+- requester and recipient, each with role, instance, boot generation, and a possession proof
 - policy revision, method `CompleteFill`, resource handle, and origin
+- destination binding: origin, document generation, and frame
 - task id and operation id
-- lease id, epoch, `use_limit` 1, and expiry
+- lease id, epoch, `use_limit` 1, and a ttl of at most 60 seconds
 
 The bytes on the wire are an opaque reference. `omi-runner` receives that
-reference from `PrepareUse` and the browser presents it to `CompleteFill`.
-Keeper binds the reference to the recipient that the broker observed on the
-transport (`observed_peer_pid` or `observed_fingerprint`). A copied reference
-presented by another role or another boot id stays `issued`.
+reference from `PrepareUse` and the bound browser presents it to
+`CompleteFill`. Origin and destination come from the keeper policy. Keeper
+binds the reference to the recipient the broker observed
+(`observed_peer_pid` plus start time, or `observed_fingerprint`). A missing
+fingerprint does not skip that check.
+
+An `omi-runner` request to the broker is `denied_role` on the access graph.
+That is not the copied-grant check. A second admitted `browser-guard` that
+presents the same reference is `denied_recipient` at resolve, and the grant
+stays `issued` for the bound recipient. A boot-generation mismatch is
+terminal `revoked_boot`.
 
 ## Limits of this profile
 
@@ -53,8 +61,11 @@ The synthetic fill is passed to the broker on stdin. It is a lab canary.
 Disk and checkpoint searches from test plan S4 are still open, because these
 processes are not smolvm guests.
 
-Same-uid E1 means the registry and lab CA are not a secret from the other
-stubs. SPIRE, nested smolvm, and guest injection are the follow-on that would
-change that placement. In-flight Eggomi keeper pull requests stay mergeable
-on their own branch. This profile does not land application changes in
-`tzarebczan/eggomi`.
+Non-keeper stubs cannot read `state/authority` or rewrite `admission.json`
+from their mount namespace. They still share a uid with the launcher, so
+same-uid ptrace is an E1 limit. SPIRE, nested smolvm, and guest injection are
+the follow-on that would change that placement. In-flight Eggomi keeper pull
+requests stay mergeable on their own branch. This profile does not land
+application changes in `tzarebczan/eggomi`. The 2026-10-06 HTTP 404 for that
+repository was a GitHub App token scoped only to `eggomi-dstack`, not a
+missing repository.

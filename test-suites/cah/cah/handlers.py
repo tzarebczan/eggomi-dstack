@@ -23,7 +23,8 @@ from typing import Any, Callable, Dict, Optional
 from .access import AccessGraph
 from .auth import AUTHORITY_FIELDS, AuthContext
 from .grants import GrantStore
-from .registry import load_registry, save_registry
+from .policy import evaluate_prepare
+from .registry import WorkloadIdentity, load_registry, save_registry
 from .rpc import call_rpc, rpc_error, rpc_ok
 
 MAX_FIELD = 8192
@@ -46,6 +47,10 @@ class ServerState:
     key: Optional[Path]
     ca: Optional[Path]
     grant_ttl: float
+    policy: Optional[Dict[str, Any]]
+    resource_handle: Optional[str]
+    expect_server: Optional[Dict[str, str]]
+    authority: Path
     _lock: threading.Lock
 
 
@@ -74,42 +79,43 @@ def dispatch(
 def prepare_use(
     state: ServerState, auth: AuthContext, body: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Issue an opaque use-grant for an admitted browser-guard recipient."""
-    if state.grants is None or auth.identity is None:
+    """Issue an opaque use-grant for the keeper policy's recipient.
+
+    Origin, handle, lease, and destination come from ``state.policy``. The
+    requester's copy of those fields must match. A recipient with no
+    certificate or process binding is refused.
+    """
+    if state.grants is None or auth.identity is None or state.policy is None:
         return rpc_error("denied_payload")
-    fields = (
-        "operation_id",
-        "task_id",
-        "lease_id",
-        "policy_revision",
-        "resource_handle",
-        "origin",
-        "recipient_instance_id",
-    )
-    if any(not isinstance(body.get(key), str) or not body[key] for key in fields):
-        return rpc_error("denied_payload")
-    epoch = body.get("lease_epoch")
-    if isinstance(epoch, bool) or not isinstance(epoch, int):
+    prepared = evaluate_prepare(state.policy, body)
+    if prepared is None:
         return rpc_error("denied_payload")
     recipient = load_registry(state.registry_path).find_instance(
-        str(body["recipient_instance_id"])
+        prepared.recipient_instance_id
     )
     if recipient is None or recipient.role != "browser-guard":
         return rpc_error("denied_recipient")
-    record = state.grants.issue(
-        requester=auth.identity,
-        recipient=recipient,
-        policy_revision=str(body["policy_revision"]),
-        resource_handle=str(body["resource_handle"]),
-        origin=str(body["origin"]),
-        task_id=str(body["task_id"]),
-        operation_id=str(body["operation_id"]),
-        lease_id=str(body["lease_id"]),
-        lease_epoch=epoch,
-        ttl_seconds=state.grant_ttl,
-    )
+    if not _recipient_ready(recipient, state.transport):
+        return rpc_error("denied_recipient")
+    try:
+        record = state.grants.issue(
+            requester=auth.identity,
+            recipient=recipient,
+            policy_revision=prepared.policy_revision,
+            resource_handle=prepared.resource_handle,
+            origin=prepared.origin,
+            task_id=prepared.task_id,
+            operation_id=prepared.operation_id,
+            lease_id=prepared.lease_id,
+            lease_epoch=prepared.lease_epoch,
+            ttl_seconds=state.grant_ttl,
+            frame_id=prepared.frame_id,
+            navigation_generation=prepared.navigation_generation,
+        )
+    except ValueError:
+        return rpc_error("denied_payload")
     return rpc_ok(
-        {"grant_ref": record["grant_ref"], "operation_id": body["operation_id"]}
+        {"grant_ref": record["grant_ref"], "operation_id": prepared.operation_id}
     )
 
 
@@ -122,15 +128,23 @@ def resolve_use_grant(
     grant_ref = body.get("grant_ref")
     origin = body.get("origin")
     operation_id = body.get("operation_id")
+    frame_id = body.get("frame_id")
+    navigation = body.get("navigation_generation")
     if not all(
-        isinstance(item, str) and item for item in (grant_ref, origin, operation_id)
+        isinstance(item, str) and item
+        for item in (grant_ref, origin, operation_id, frame_id, navigation)
     ):
         return rpc_error("denied_payload")
     observed = _observed(state, body)
     if observed is None:
         return rpc_error("denied_unadmitted")
     result = state.grants.resolve(
-        str(grant_ref), observed, str(origin), str(operation_id)
+        str(grant_ref),
+        observed,
+        str(origin),
+        str(operation_id),
+        str(frame_id),
+        str(navigation),
     )
     if not result["ok"]:
         return rpc_error(str(result["code"]))
@@ -146,7 +160,12 @@ def complete_fill(
     state: ServerState, auth: AuthContext, body: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Release the fill value to the authenticated browser-guard only."""
-    if state.secret is None or state.keeper_addr is None or auth.identity is None:
+    if (
+        state.secret is None
+        or state.keeper_addr is None
+        or state.resource_handle is None
+        or auth.identity is None
+    ):
         return rpc_error("denied_payload")
     fields = (
         "grant_ref",
@@ -161,15 +180,18 @@ def complete_fill(
         "grant_ref": body["grant_ref"],
         "origin": body["origin"],
         "operation_id": body["operation_id"],
+        "frame_id": body["frame_id"],
+        "navigation_generation": body["navigation_generation"],
     }
     if state.transport == "mtls":
         if not auth.identity.cert_fingerprint:
             return rpc_error("denied_unadmitted")
         report["observed_fingerprint"] = auth.identity.cert_fingerprint
     else:
-        if auth.identity.pid is None:
+        if auth.identity.pid is None or auth.identity.starttime is None:
             return rpc_error("denied_unadmitted")
         report["observed_peer_pid"] = auth.identity.pid
+        report["observed_starttime"] = auth.identity.starttime
     upstream = call_rpc(
         state.keeper_addr,
         "ResolveUseGrant",
@@ -178,11 +200,14 @@ def complete_fill(
         cert=state.cert,
         key=state.key,
         ca=state.ca,
+        expect_server=state.expect_server,
         expect_server_role="keeper-core",
     )
     if not upstream.get("ok"):
         return rpc_error(str(upstream.get("code", "denied_grant")))
     if upstream["body"].get("operation_id") != body["operation_id"]:
+        return rpc_error("denied_payload")
+    if upstream["body"].get("resource_handle") != state.resource_handle:
         return rpc_error("denied_payload")
     _record_fill_context(state, body)
     return rpc_ok({"operation_id": body["operation_id"], "fill": state.secret})
@@ -197,6 +222,13 @@ def report_outcome(
     operation_id = body.get("operation_id")
     outcome = body.get("outcome")
     if not isinstance(operation_id, str) or outcome not in {"filled", "refused"}:
+        return rpc_error("denied_payload")
+    if state.grants is None:
+        return rpc_error("denied_payload")
+    grant = state.grants.find_operation(operation_id)
+    if grant is None or grant["disposition"] != "consumed":
+        return rpc_error("denied_payload")
+    if grant["recipient"]["instance_id"] != auth.identity.instance_id:
         return rpc_error("denied_payload")
     path = state.state / "outcomes.jsonl"
     line = json.dumps(
@@ -232,14 +264,16 @@ def admit_workload(
         for item in (token, admit_role, admit_instance, admit_boot)
     ):
         return rpc_error("denied_payload")
-    scope_path = state.state / "bootstrap-scope.json"
+    scope_path = state.authority / "bootstrap-scope.json"
     with state._lock:
         if not scope_path.exists():
             return rpc_error("denied_bootstrap")
         scope = json.loads(scope_path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+        if state.grants is not None and state.grants.bootstrap_used(digest):
+            return rpc_error("denied_bootstrap")
         if scope.get("used") is True:
             return rpc_error("denied_bootstrap")
-        digest = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
         expected = str(scope.get("token_sha256", ""))
         if not expected or not hmac.compare_digest(digest, expected):
             return rpc_error("denied_bootstrap")
@@ -250,13 +284,18 @@ def admit_workload(
         ):
             return rpc_error("denied_bootstrap")
         registry = load_registry(state.registry_path)
+        if registry.find_instance(str(admit_instance)) is not None:
+            return rpc_error("denied_bootstrap")
         registry.workloads.append(
             {
                 "role": admit_role,
                 "instance_id": admit_instance,
                 "boot_id": admit_boot,
+                "boot_generation": 1,
+                "boot_history": [admit_boot],
                 "cert_fingerprint": None,
                 "pid": None,
+                "starttime": None,
             }
         )
         save_registry(state.registry_path, registry)
@@ -267,6 +306,8 @@ def admit_workload(
         )
         os.chmod(tmp, 0o600)
         os.replace(tmp, scope_path)
+        if state.grants is not None:
+            state.grants.note_bootstrap(digest)
     return rpc_ok({"instance_id": admit_instance})
 
 
@@ -279,15 +320,30 @@ METHODS: Dict[tuple[str, str], HandlerFn] = {
 }
 
 
-def _observed(state: ServerState, body: Dict[str, Any]) -> Any:
+def _observed(state: ServerState, body: Dict[str, Any]) -> Optional[WorkloadIdentity]:
     registry = load_registry(state.registry_path)
     fingerprint = body.get("observed_fingerprint")
     pid = body.get("observed_peer_pid")
+    starttime = body.get("observed_starttime")
     if isinstance(fingerprint, str) and fingerprint:
         return registry.find_fingerprint(fingerprint)
-    if isinstance(pid, int) and not isinstance(pid, bool):
-        return registry.find_pid(pid)
+    if (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and isinstance(starttime, int)
+        and not isinstance(starttime, bool)
+    ):
+        identity = registry.find_pid(pid)
+        if identity is None or identity.starttime != starttime:
+            return None
+        return identity
     return None
+
+
+def _recipient_ready(recipient: WorkloadIdentity, transport: str) -> bool:
+    if transport == "mtls":
+        return bool(recipient.cert_fingerprint) and recipient.has_possession()
+    return recipient.pid is not None and recipient.starttime is not None
 
 
 def _fields_ok(body: Dict[str, Any]) -> bool:

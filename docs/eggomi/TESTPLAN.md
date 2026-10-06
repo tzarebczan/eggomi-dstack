@@ -78,9 +78,14 @@ L1 form.
 4. Require expired material to fail.
 
 The host-native stand-in is CAH `fill-v1` under `test-suites/cah` (retired
-alias J06). It shows one successful fill and refusals for a copied grant, a
-wrong role, and a wrong boot id. Evidence is E1. The disk and checkpoint
-search above stays open. See [docs/cah](../cah/README.md).
+alias J06, WS-SIM06 `browser-signin`, evidence class `process_e2e`). It shows
+one successful fill. A wrong role is refused by the access graph before the
+grant is checked, and that grant stays issued. A second admitted
+`browser-guard` that presents the copied grant reference is refused at
+resolve (`denied_recipient`); that is a separate check, and the grant stays
+issued until the bound recipient fills. A changed boot id is refused.
+Evidence is E1. The disk and checkpoint search above stays open. See
+[docs/cah](../cah/README.md).
 
 ### S5: activity and metrics
 

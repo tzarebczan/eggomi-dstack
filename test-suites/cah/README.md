@@ -43,12 +43,20 @@ Case results from that run:
 | --- | --- |
 | `smuggle_authority_field` | `denied_authority_field` |
 | `browser_cannot_prepare` | `denied_role` |
+| `forged_origin` | `denied_payload` |
 | `prepare_positive` | `ok` |
+| `hostile_navigation` | `denied_payload` |
+| `hostile_left_issued` | `issued` |
 | `positive_fill` | `ok` |
 | `outcome` | `ok` |
+| `outcome_other_browser` | `denied_payload` |
 | `replay_consumed` | `grant_consumed` |
 | `prepare_copied` | `ok` |
-| `copied_wrong_role` | `denied_role` |
+| `copied_wrong_role` | `denied_role` (access graph) |
+| `wrong_role_left_issued` | `issued` |
+| `copied_second_browser` | `denied_recipient` (admitted browser-2) |
+| `copied_left_issued` | `issued` |
+| `copied_owner_fill` | `ok` |
 | `prepare_wrong_boot` | `ok` |
 | `wrong_boot` | `denied_boot` |
 | `connector_default_deny` | `denied_role` |

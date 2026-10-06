@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .auth import AuthContext, authenticate_mtls, authenticate_unix, server_spiffe_role
+from .auth import AuthContext, authenticate_mtls, authenticate_unix, peer_spiffe
 from .forward import connect, parse_address
 from .frame import FrameError, read_frame, write_frame
 
@@ -40,15 +40,23 @@ def call_rpc(
     key: Optional[Path] = None,
     ca: Optional[Path] = None,
     expect_server_role: Optional[str] = None,
+    expect_server: Optional[Dict[str, str]] = None,
     timeout: float = 5,
 ) -> Dict[str, Any]:
-    """Send one request and return the response object."""
+    """Send one request and return the response object.
+
+    ``expect_server`` pins the callee SPIFFE id and certificate fingerprint.
+    ``expect_server_role`` remains for callers that only know the role; the
+    lab fill demo passes the full pin.
+    """
     sock = connect(address, timeout=timeout)
     try:
         if transport == "mtls":
-            if cert is None or key is None or ca is None or expect_server_role is None:
+            if cert is None or key is None or ca is None:
                 raise RuntimeError("mtls client is missing certificate material")
-            sock = _wrap_client(sock, cert, key, ca, expect_server_role)
+            if expect_server is None and expect_server_role is None:
+                raise RuntimeError("mtls client is missing the expected server")
+            sock = _wrap_client(sock, cert, key, ca, expect_server, expect_server_role)
         elif transport != "unix":
             raise RuntimeError("transport must be unix or mtls")
         write_frame(sock, {"method": method, "body": body})
@@ -168,7 +176,8 @@ def _wrap_client(
     cert: Path,
     key: Path,
     ca: Path,
-    expect_server_role: str,
+    expect_server: Optional[Dict[str, str]],
+    expect_server_role: Optional[str],
 ) -> ssl.SSLSocket:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -177,11 +186,25 @@ def _wrap_client(
     ctx.load_verify_locations(cafile=str(ca))
     ctx.verify_mode = ssl.CERT_REQUIRED
     # Identity is the SPIFFE URI, not a DNS name. Hostname checks would reject
-    # these lab certificates, so the URI role is checked immediately below.
+    # these lab certificates, so the URI is checked immediately below.
     ctx.check_hostname = False
     wrapped = ctx.wrap_socket(conn, server_side=False, server_hostname="cah.lab")
-    role = server_spiffe_role(wrapped)
-    if role != expect_server_role:
+    peer = peer_spiffe(wrapped)
+    if peer is None:
+        wrapped.close()
+        raise RuntimeError("server certificate does not carry one spiffe uri")
+    uri, fingerprint = peer
+    if expect_server is not None:
+        if (
+            uri["domain"] != expect_server["domain"]
+            or uri["tenant"] != expect_server["tenant"]
+            or uri["role"] != expect_server["role"]
+            or uri["instance"] != expect_server["instance"]
+            or fingerprint != expect_server["fingerprint"]
+        ):
+            wrapped.close()
+            raise RuntimeError("server certificate does not match the callee pin")
+    elif uri["role"] != expect_server_role:
         wrapped.close()
         raise RuntimeError("server certificate role does not match the callee")
     return wrapped

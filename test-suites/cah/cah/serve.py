@@ -16,6 +16,7 @@ from .access import load_access
 from .auth import AuthContext
 from .grants import GrantStore
 from .handlers import ServerState, dispatch
+from .policy import load_policy
 from .rpc import serve
 
 
@@ -32,6 +33,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--key", type=Path)
     parser.add_argument("--ca", type=Path)
     parser.add_argument("--grant-ttl", type=float, default=30)
+    parser.add_argument("--registry", type=Path)
+    parser.add_argument("--authority", type=Path)
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--resource-handle", default="")
+    parser.add_argument("--expect-domain", default="")
+    parser.add_argument("--expect-tenant", default="")
+    parser.add_argument("--expect-role", default="")
+    parser.add_argument("--expect-instance", default="")
+    parser.add_argument("--expect-fingerprint", default="")
     args = parser.parse_args(argv)
     secret = None
     if args.role == "credential-broker":
@@ -40,10 +50,29 @@ def main(argv: list[str] | None = None) -> int:
             print("error: missing fill secret on stdin", file=sys.stderr)
             return 1
     state_dir = args.state
-    registry_path = state_dir / "admission.json"
-    grants = (
-        GrantStore(state_dir / "grants.json") if args.role == "keeper-core" else None
-    )
+    authority = args.authority or (state_dir / "authority")
+    registry_path = args.registry or (state_dir / "admission.json")
+    grants = None
+    policy = None
+    if args.role == "keeper-core":
+        if args.policy is None:
+            print("error: keeper-core requires --policy", file=sys.stderr)
+            return 1
+        policy = load_policy(args.policy)
+        grants = GrantStore(
+            authority / "grants.json",
+            authority / "authority-journal.jsonl",
+            authority / "keeper-epoch",
+        )
+    expect_server = None
+    if args.expect_fingerprint:
+        expect_server = {
+            "domain": args.expect_domain,
+            "tenant": args.expect_tenant,
+            "role": args.expect_role,
+            "instance": args.expect_instance,
+            "fingerprint": args.expect_fingerprint,
+        }
     server_state = ServerState(
         role=args.role,
         state=state_dir,
@@ -57,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
         key=args.key,
         ca=args.ca,
         grant_ttl=args.grant_ttl,
+        policy=policy,
+        resource_handle=args.resource_handle or None,
+        expect_server=expect_server,
+        authority=authority,
         _lock=threading.Lock(),
     )
 

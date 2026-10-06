@@ -1,23 +1,47 @@
 {
   "schema_version": "cah-scenario-aliases/v1",
   "authoritative_catalog": "WS-SIM01-WS-SIM18",
-  "catalog_pin": null,
-  "catalog_pin_reason": "WS1 revision 1 contracts were described by the coordinator and the zip was not attached. Scenario names were not invented. J01-J14 are retired aliases and are not a second scheduler.",
+  "catalog_file": "contracts/ws1/scenarios.json",
+  "catalog_pin": "a9ff9e44836fe70b75e66e3367c76f24922bf507f27e4deb7d3f0625faef9820",
+  "catalog_pin_reason": "SHA-256 of contracts/ws1/scenarios.json copied from WS1 revision 1 zip f3da0ddc62b6ad94711a045bf9fffd96a618857268cd2d7ff8f43ca6be05413c.",
   "runner": "test-suites/eggomi outer substrate plus test-suites/cah compartment ports. One harness.",
+  "ws1_ports": [
+    {
+      "harness_port": "fill-v1",
+      "ws_sim_id": "WS-SIM06",
+      "ws_sim_name": "browser-signin",
+      "acceptance_refs": ["WS-CRED02", "WS-CRED03", "WS-LIFE04"],
+      "evidence": "process_e2e",
+      "note": "Host-native stand-in: hostile navigation is refused and the bound browser receives the fill. Evidence is process_e2e, not the scenario's vm_e2e. Profile attach, profile commit, and WS-LIFE04 are not executed."
+    },
+    {
+      "harness_port": "s1-persistence",
+      "ws_sim_id": null,
+      "closest_ws_sim_id": "WS-SIM12",
+      "closest_ws_sim_name": "branch-and-restore",
+      "note": "Outer encrypted-disk persistence is the closest existing port. This suite does not execute the WS-SIM12 procedure."
+    },
+    {
+      "harness_port": "s6-faults",
+      "ws_sim_id": null,
+      "supports": ["WS-PERF06", "WS-PLAT01-negative"],
+      "note": "Production-root rejection and measurement mismatch. Not itself a WS-SIM id."
+    }
+  ],
   "retired_journeys": [
     {"id": "J01", "name": "Idle connected account", "harness_port": null},
     {"id": "J02", "name": "DM and group burst", "harness_port": null},
     {"id": "J03", "name": "Morning catch-up and archive search", "harness_port": null},
     {"id": "J04", "name": "Omi read and draft", "harness_port": null},
     {"id": "J05", "name": "Approved provider action", "harness_port": null},
-    {"id": "J06", "name": "Browser sign-in and read", "harness_port": "fill-v1"},
+    {"id": "J06", "name": "Browser sign-in and read", "harness_port": "fill-v1", "ws_sim_id": "WS-SIM06"},
     {"id": "J07", "name": "Browser upload/action", "harness_port": null},
     {"id": "J08", "name": "Workbench and CLI task", "harness_port": null},
     {"id": "J09", "name": "Keeper unavailable", "harness_port": null},
     {"id": "J10", "name": "Reconnect and refresh storm", "harness_port": null},
     {"id": "J11", "name": "Reflection, indexing and restore", "harness_port": null},
     {"id": "J12", "name": "Malicious tenant and noisy neighbor", "harness_port": null},
-    {"id": "J13", "name": "Rolling release and issuer rotation", "harness_port": "s6-faults"},
-    {"id": "J14", "name": "Pristine branch and teardown", "harness_port": "s1-persistence"}
+    {"id": "J13", "name": "Rolling release and issuer rotation", "harness_port": "s6-faults", "ws_sim_id": null},
+    {"id": "J14", "name": "Pristine branch and teardown", "harness_port": "s1-persistence", "closest_ws_sim_id": "WS-SIM12"}
   ]
 }

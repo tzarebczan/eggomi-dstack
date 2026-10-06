@@ -1,0 +1,1401 @@
+{
+  "schema_version": "eggomi/workload-acceptance/v1",
+  "status": "definitions_only_not_executed",
+  "extends": [
+    "predecessor omi-node-2026-10-acceptance.json",
+    "r7.1 R71 addendum"
+  ],
+  "replaces": [],
+  "tests": [
+    {
+      "id": "WS-ID01",
+      "title": "Cross-tenant launch impersonation",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Two synthetic tenants with independent operational grants.",
+      "exercise_or_fault": "Tenant A supplies tenant B identifiers in launch request.",
+      "assertions": [
+        "No B identity, mount, grant or secret is issued.",
+        "Denial occurs at verified launcher/authority, not only UI."
+      ],
+      "positive_control": "A valid A launch reaches ready.",
+      "invariants": [
+        "I03",
+        "I04",
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID02",
+      "title": "Role self-assertion",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Unprivileged workbench with bootstrap route only.",
+      "exercise_or_fault": "Request credential-broker or approver role through labels/CSR/header.",
+      "assertions": [
+        "Identity service rejects the unapproved role.",
+        "No parent registration API is exposed."
+      ],
+      "positive_control": "Approved workbench identity is issued.",
+      "invariants": [
+        "I01",
+        "I04"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID03",
+      "title": "Workload API forwarding confused deputy",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Selected SPIRE/identity adapter and two guests behind any local proxy.",
+      "exercise_or_fault": "Guest A requests or races identity intended for B or proxy host.",
+      "assertions": [
+        "Peer is mapped to actual launch/key/boot.",
+        "General Workload API or proxy SVID cannot be used as B."
+      ],
+      "positive_control": "Both separately authorized identities work.",
+      "invariants": [
+        "I04",
+        "I08"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID04",
+      "title": "Copied valid quote and bootstrap-key substitution",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "confidential_baremetal",
+      "setup": "Two parents with different admitted boot keys.",
+      "exercise_or_fault": "Reuse another parent quote or replace issuer key after verification.",
+      "assertions": [
+        "Key/nonce/instance/release mismatch rejects admission.",
+        "No operational key is released."
+      ],
+      "positive_control": "Correct fresh evidence admits only its bound key.",
+      "invariants": [
+        "I03",
+        "I04"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID05",
+      "title": "CID and process-ID reuse",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Destroy A, reuse routing identifiers for a new guest.",
+      "exercise_or_fault": "Present old launch binding/certificate or stale routing record.",
+      "assertions": [
+        "Old boot has no active authority.",
+        "New guest gets no inherited secret."
+      ],
+      "positive_control": "Freshly admitted new boot works.",
+      "invariants": [
+        "I04",
+        "I07"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID06",
+      "title": "Issuer registration and trust-bundle replacement",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Accepted trust domain with current keeper delegation.",
+      "exercise_or_fault": "Use ordinary host admin path or child input to install a CA/registration.",
+      "assertions": [
+        "Unaccepted issuer/role/tenant binding is refused.",
+        "Issuer access does not stand in for owner delegation."
+      ],
+      "positive_control": "Owner/release-authorized bundle transition works.",
+      "invariants": [
+        "I01",
+        "I03",
+        "I14"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID07",
+      "title": "Renewal and clock rollback",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Long-lived authenticated stream and expiring grant.",
+      "exercise_or_fault": "Delay control updates; move wall clock backward; restore old elapsed state.",
+      "assertions": [
+        "No lease/grant extension from clock rollback.",
+        "Sensitive operation pauses when freshness is unprovable."
+      ],
+      "positive_control": "Fresh control and legitimate identity renewal restore permitted access.",
+      "invariants": [
+        "I05",
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-ID08",
+      "title": "Identity secret absent from pristine template",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Prepare snapshot of an unassigned template.",
+      "exercise_or_fault": "Search test image/memory fixture for seeded identity keys/tickets/grants; branch twice.",
+      "assertions": [
+        "No tenant or workload identity material is reused.",
+        "Branches require independent activation."
+      ],
+      "positive_control": "Both freshly activated synthetic branches can run own tasks.",
+      "invariants": [
+        "I07",
+        "I12"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC01",
+      "title": "Wrong service or trust domain",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "mTLS service with an exact expected peer.",
+      "exercise_or_fault": "Present valid cert from another role/domain/public CA or CN-only identity.",
+      "assertions": [
+        "Handshake/application admission is refused.",
+        "No public-PKI fallback."
+      ],
+      "positive_control": "Exact accepted service peer succeeds.",
+      "invariants": [
+        "I03",
+        "I04"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC02",
+      "title": "Copied capability from another workload",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Two valid browser instances with separate keys and boots.",
+      "exercise_or_fault": "B presents A use grant over B mTLS channel.",
+      "assertions": [
+        "Recipient proof-of-possession mismatch rejects.",
+        "Secret use count does not move to B."
+      ],
+      "positive_control": "A can use its current grant once.",
+      "invariants": [
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC03",
+      "title": "Replay, timeout and concurrent duplicate RPC",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Identified approved fake-provider send.",
+      "exercise_or_fault": "Replay request across connections and race same operation; drop response after acceptance.",
+      "assertions": [
+        "Only one logical external action is admitted under existing dispatcher rules.",
+        "Unknown result remains attached to same operation."
+      ],
+      "positive_control": "Read/reconcile recovers provider receipt.",
+      "invariants": [
+        "I06",
+        "I07"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC04",
+      "title": "TLS early data and unsafe resumption",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Selected production RPC/TLS implementations.",
+      "exercise_or_fault": "Attempt 0-RTT or restore old TLS resumption material after revocation.",
+      "assertions": [
+        "No early-data dispatch.",
+        "Disabled resumption or complete current-binding validation is proven."
+      ],
+      "positive_control": "Fresh full handshake under current policy works.",
+      "invariants": [
+        "I05",
+        "I06"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC05",
+      "title": "Request/stream exhaustion",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Authorized small request plus hostile concurrent stream.",
+      "exercise_or_fault": "Oversized decoded message, compressed expansion, nesting, headers, queue and stalled chunks.",
+      "assertions": [
+        "Resource limits refuse hostile inputs and release buffers.",
+        "Other tenant latency/backlog remains within recorded bound."
+      ],
+      "positive_control": "Valid bounded transfer completes.",
+      "invariants": [
+        "I05",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC06",
+      "title": "UDS/vsock proxy identity confusion",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Byte bridge and optional explicit terminating proxy.",
+      "exercise_or_fault": "Send a forged original-user header through the proxy.",
+      "assertions": [
+        "No caller identity accepted from header alone.",
+        "Terminating proxy uses an explicit narrow delegation contract or is refused."
+      ],
+      "positive_control": "End-to-end TLS byte bridge preserves expected identity.",
+      "invariants": [
+        "I04",
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-RPC07",
+      "title": "Stream revocation",
+      "work_item": "W3",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Authorized data stream publishing committed revisions.",
+      "exercise_or_fault": "Withdraw source/data permission while stream remains open.",
+      "assertions": [
+        "New disallowed data is not released.",
+        "Measured refusal satisfies freshness contract."
+      ],
+      "positive_control": "Unrelated authorized subscription continues.",
+      "invariants": [
+        "I05",
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-AUTH01",
+      "title": "Keeper/workload self-approval",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Real approval verifier with synthetic human and keeper keys.",
+      "exercise_or_fault": "Validly sign approval with keeper/agent key.",
+      "assertions": [
+        "No approval spend or provider dispatch.",
+        "No alternate internal RPC permits self-promotion."
+      ],
+      "positive_control": "Human approver signs exact operation and it executes once.",
+      "invariants": [
+        "I01",
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-AUTH02",
+      "title": "Payload and audience substitution",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Approved send for account/channel/payload X.",
+      "exercise_or_fault": "Swap account, recipient, body or destination while keeping operation handle.",
+      "assertions": [
+        "Mismatch rejects before effect.",
+        "Same-domain different audience is not accepted."
+      ],
+      "positive_control": "Original unchanged approved payload succeeds.",
+      "invariants": [
+        "I05",
+        "I06"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-AUTH03",
+      "title": "Delegation widening",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Task with read-only source scope.",
+      "exercise_or_fault": "Ask child, policy adapter or capability issuer for write/export/new owner kinds.",
+      "assertions": [
+        "Intersection cannot widen.",
+        "Unknown critical kind/field fails closed."
+      ],
+      "positive_control": "Permitted bounded read works.",
+      "invariants": [
+        "I01",
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-AUTH04",
+      "title": "Policy evaluation failure",
+      "work_item": "W6",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Selected embedded or existing policy evaluator.",
+      "exercise_or_fault": "Cause type/schema/unknown-field errors in a forbid or context.",
+      "assertions": [
+        "Critical diagnostics cause denial, not accidental allow.",
+        "One evaluator matches existing verifier semantics."
+      ],
+      "positive_control": "Well-formed permitted policy still passes.",
+      "invariants": [
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-AUTH05",
+      "title": "Stale configuration and update ordering",
+      "work_item": "W6",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Two services at different policy acknowledgements.",
+      "exercise_or_fault": "Widen policy locally without owner commit; withhold narrowing from one receiver.",
+      "assertions": [
+        "No uncommitted broadening.",
+        "Stale sensitive receiver pauses after freshness bound."
+      ],
+      "positive_control": "Committed accepted update applies and is shown accurately.",
+      "invariants": [
+        "I05",
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-AUTH06",
+      "title": "Turn ceiling when keeper wakes",
+      "work_item": "W8",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Phone/browser device-limited Omi turn.",
+      "exercise_or_fault": "Keeper becomes ready; submit old job-bus connector action.",
+      "assertions": [
+        "Existing turn gains no connectors/leases.",
+        "New proposal revalidates source/version/current authority."
+      ],
+      "positive_control": "Explicit new admitted keeper turn uses allowed connection.",
+      "invariants": [
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED01",
+      "title": "Secret enumeration and raw signing",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Omi and workbench valid identities.",
+      "exercise_or_fault": "Try GetSecret, SignAnyBytes, arbitrary provider URL and keeper filesystem paths.",
+      "assertions": [
+        "No such generic authority path.",
+        "Operational DEK and other credential records inaccessible."
+      ],
+      "positive_control": "Typed allowed data query and provider operation work.",
+      "invariants": [
+        "I02",
+        "I08"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED02",
+      "title": "Exact fill recipient and lease",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Owner-saved test password and authorized browser A.",
+      "exercise_or_fault": "Browser B, wrong boot, expired lease or workbench tries ConsumeFill.",
+      "assertions": [
+        "No plaintext delivered to wrong recipient.",
+        "Use handle cannot be replayed across lease generations."
+      ],
+      "positive_control": "A completes permitted fixture sign-in.",
+      "invariants": [
+        "I05",
+        "I06"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED03",
+      "title": "Navigation/frame race",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Hostile fixture changes frame/document after validation.",
+      "exercise_or_fault": "Navigate or replace frame before injected fill.",
+      "assertions": [
+        "Guard invalidates fill or binds safely to original accepted document.",
+        "Wrong origin/field receives no secret."
+      ],
+      "positive_control": "Stable correct sign-in page succeeds.",
+      "invariants": [
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED04",
+      "title": "Credential trace leakage",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Distinct canary passwords, TOTP seed and API token.",
+      "exercise_or_fault": "Execute sign-in and trigger errors, screenshots, telemetry, shell and CLI paths.",
+      "assertions": [
+        "No canary in model/tool output, global logs/env/arguments/clipboard or shared traces.",
+        "Expected credential recipient/upstream exposure documented."
+      ],
+      "positive_control": "Private owner receipt reports non-secret outcome.",
+      "invariants": [
+        "I02",
+        "I11"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED05",
+      "title": "Owner-only credential changes",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Existing saved credential at version 1.",
+      "exercise_or_fault": "Keeper tries put/delete/export or changes allowed domains.",
+      "assertions": [
+        "Actual endpoint requires owner authority and exact version.",
+        "Operational use cannot mutate policy."
+      ],
+      "positive_control": "Owner-authorized replacement succeeds and versioned uses revalidate.",
+      "invariants": [
+        "I01",
+        "I05"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED06",
+      "title": "Delayed OAuth refresh release",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Old owner refresh pending at fake token server.",
+      "exercise_or_fault": "Transfer owner, then deliver new access token; crash around issuance record/return.",
+      "assertions": [
+        "Stale generation cannot receive newly unaccounted usable token.",
+        "Outstanding exposure prevents premature safe-point declaration."
+      ],
+      "positive_control": "Fresh current-owner refresh records expiry before exposure.",
+      "invariants": [
+        "I06",
+        "I07"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED07",
+      "title": "Cross-connection protocol state",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Two sessions on same network and another provider.",
+      "exercise_or_fault": "One worker requests other session record/key or publishes as it.",
+      "assertions": [
+        "No other session custody/publication scope.",
+        "No general vault/sync key release."
+      ],
+      "positive_control": "Own session receive/commit/ACK works.",
+      "invariants": [
+        "I02",
+        "I04"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED08",
+      "title": "Placeholder semantics and reflection",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Synthetic compatibility API with header substitution and echo endpoint.",
+      "exercise_or_fault": "Change host/method/path/body; reflect authenticated header in response.",
+      "assertions": [
+        "Binding and dispatcher scope enforced; unknown semantics refused.",
+        "Reflected secret cannot support a claim of DLP; exposure triggers explicit containment evidence."
+      ],
+      "positive_control": "Bound authorized compatibility request succeeds.",
+      "invariants": [
+        "I05",
+        "I11"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-CRED09",
+      "title": "CLI/model credential custody",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Chosen CLI/model adapter with controlled login state.",
+      "exercise_or_fault": "Branch workers, refresh concurrently, try alternate provider or token read.",
+      "assertions": [
+        "No refresh-token clones or hidden route fallback.",
+        "Unsupported custody mode unavailable."
+      ],
+      "positive_control": "Single authorized credential owner completes an allowed task.",
+      "invariants": [
+        "I02",
+        "I07",
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-NET01",
+      "title": "Network floor before workload",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "First boot, graceful/unclean restart and launcher restart.",
+      "exercise_or_fault": "Send immediately on all interfaces before policy readiness.",
+      "assertions": [
+        "No forbidden packet leaves before enforcement.",
+        "Secret release follows admitted network identity state."
+      ],
+      "positive_control": "Permitted route opens only after readiness.",
+      "invariants": [
+        "I10"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-NET02",
+      "title": "Interceptor missing and administrative bypass",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Accepted external-interceptor worker.",
+      "exercise_or_fault": "Kill interceptor, rebind, invoke no-interceptor update or alternative implicit start.",
+      "assertions": [
+        "No direct fallback.",
+        "Untrusted workload cannot change required mode."
+      ],
+      "positive_control": "Valid restored interceptor allows approved egress.",
+      "invariants": [
+        "I08",
+        "I10"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-NET03",
+      "title": "IP/DNS and alternate-protocol bypass",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Guest with bounded provider egress.",
+      "exercise_or_fault": "Use IPv6, literals, metadata IP, loopback, private subnets, DNS rebinding, UDP/QUIC/WebRTC and alternate port.",
+      "assertions": [
+        "Policy denies undeclared traffic independent of proxy variables.",
+        "Intended provider TLS identity remains checked."
+      ],
+      "positive_control": "Declared connector protocol continues.",
+      "invariants": [
+        "I10"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-NET04",
+      "title": "Credential CA scope",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Guest with scoped interception CA and ordinary service TLS.",
+      "exercise_or_fault": "Use CA for unapproved host or install it in keeper trust path.",
+      "assertions": [
+        "Unexpected destination/issuer is refused.",
+        "No global trust-store mutation."
+      ],
+      "positive_control": "Approved compatibility host and genuine unrelated TLS both work.",
+      "invariants": [
+        "I03",
+        "I10"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-NET05",
+      "title": "Interception and checkpoint compatibility",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Pinned smolvm with chosen egress mode.",
+      "exercise_or_fault": "Try unsupported external-interceptor branch/checkpoint launch.",
+      "assertions": [
+        "Unsupported combination stays unavailable.",
+        "Patch enabling it requires whole restore/network identity test."
+      ],
+      "positive_control": "Supported normal launch works with enforcement.",
+      "invariants": [
+        "I10",
+        "I12"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE01",
+      "title": "Pristine versus dirty pool reuse",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Browser used with credentials and files.",
+      "exercise_or_fault": "Delete profile directory and offer same instance as pristine.",
+      "assertions": [
+        "Instance is destroyed or quarantined, never reused by cosmetic cleanup.",
+        "Accepted output survives destruction."
+      ],
+      "positive_control": "Fresh unassigned instance admits next user.",
+      "invariants": [
+        "I12",
+        "I13"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE02",
+      "title": "Snapshot with live identity and TCP state",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Authorized worker snapshot taken during a task.",
+      "exercise_or_fault": "Restore while old process remains live.",
+      "assertions": [
+        "Restored network remains denied before new identity/current authority.",
+        "No duplicate profile/connection lease or inherited channel authority."
+      ],
+      "positive_control": "Explicit fenced original-to-successor protocol can resume.",
+      "invariants": [
+        "I07",
+        "I10",
+        "I12"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE03",
+      "title": "Paused sender after final check",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Existing dispatcher approved fake-provider action.",
+      "exercise_or_fault": "Freeze executor after final check before network send; attempt ownership transition and thaw.",
+      "assertions": [
+        "External observer sees declared fencing behavior.",
+        "Any in-flight uncertainty retained; database denial alone insufficient."
+      ],
+      "positive_control": "Orderly quiesce and current owner send succeeds.",
+      "invariants": [
+        "I06",
+        "I07"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE04",
+      "title": "Profile write-back loss",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Leased signed-in profile version and staged update.",
+      "exercise_or_fault": "Lose reply/kill before promotion; request a new lease.",
+      "assertions": [
+        "Old accepted version retained with suspect-session policy.",
+        "No two active owners or silent stale cookie reuse."
+      ],
+      "positive_control": "Verified promotion permits later lease.",
+      "invariants": [
+        "I07",
+        "I13"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE05",
+      "title": "Issuer/witness outage",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Current sessions, cached records and pending approval.",
+      "exercise_or_fault": "Block issuer/witness until freshness expires.",
+      "assertions": [
+        "No new sensitive authority, approval spend or token release.",
+        "Cached authorized reads behave as specified, not a global destructive reset."
+      ],
+      "positive_control": "After current recovery proof, permitted work resumes.",
+      "invariants": [
+        "I05",
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE06",
+      "title": "Release rollback",
+      "work_item": "W8",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Account on new accepted policy and key generation.",
+      "exercise_or_fault": "Roll transport binary or data disk back to old state.",
+      "assertions": [
+        "Unsupported reader/old generation refuses without deleting data.",
+        "No permissive fallback or parallel runner."
+      ],
+      "positive_control": "Compatible safe reader uses current state.",
+      "invariants": [
+        "I06",
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-LIFE07",
+      "title": "Cross-host handoff",
+      "work_item": "W8",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "One authorized keeper/connection and destination on another machine.",
+      "exercise_or_fault": "Lose quiesce/transfer acknowledgement, retry over different transport.",
+      "assertions": [
+        "No implicit authority transfer by transport or timeout.",
+        "Same operation/connection identity retained."
+      ],
+      "positive_control": "Completed exact-state handoff activates one successor.",
+      "invariants": [
+        "I06",
+        "I07"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-DATA01",
+      "title": "Archive/protocol commit failures",
+      "work_item": "W4",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Actual selected SDK or faithful durable receive queue fixture.",
+      "exercise_or_fault": "Crash at archive, protocol and acknowledgement boundaries including duplicate redelivery.",
+      "assertions": [
+        "No acknowledged data lost in tested contract.",
+        "Already advanced crypto state not blindly re-decrypted/replayed."
+      ],
+      "positive_control": "Normal ingestion preserves original source/IDs.",
+      "invariants": [
+        "I06",
+        "I07"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-DATA02",
+      "title": "Selective archive rollback and legal pruning",
+      "work_item": "W5",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Current hostd commitment with recent archive and recovery chunks.",
+      "exercise_or_fault": "Restore older SQLite only, then separately perform authorized retention pruning.",
+      "assertions": [
+        "Old missing acknowledged archive detected/recovered without protocol rewind.",
+        "Legal pruning is distinguishable."
+      ],
+      "positive_control": "Current snapshot/backup restores cleanly.",
+      "invariants": [
+        "I06",
+        "I13"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-DATA03",
+      "title": "Thin cache and erasure lineage",
+      "work_item": "W8",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Partial client cache, pending edit and source-derived Omi records.",
+      "exercise_or_fault": "Evict cache, erase source, restore old checkpoint.",
+      "assertions": [
+        "Eviction does not become deletion; pending edit preserved.",
+        "Erased/unauthorized source is not reused through transcript/index/checkpoint."
+      ],
+      "positive_control": "Authorized retained source is still searchable with honest coverage.",
+      "invariants": [
+        "I09",
+        "I13"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-OBS01",
+      "title": "Private data telemetry canaries",
+      "work_item": "W6",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Canaries in prompts/messages/URLs/credentials/errors.",
+      "exercise_or_fault": "Run normal and failing tasks, inspect every shared exporter and trace baggage.",
+      "assertions": [
+        "No forbidden content in fleet outputs.",
+        "Allowlist rejects arbitrary metadata fields."
+      ],
+      "positive_control": "Aggregate role/outcome metrics remain useful.",
+      "invariants": [
+        "I11"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-OBS02",
+      "title": "Guest spoofs billing identity",
+      "work_item": "W6",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Two tenants with measured workloads.",
+      "exercise_or_fault": "A emits B tenant/task/resource labels and fake counters.",
+      "assertions": [
+        "Trusted collector labels from launch mapping.",
+        "Self observations distinguished from authoritative counters."
+      ],
+      "positive_control": "Honest self observations can supplement trusted measurements.",
+      "invariants": [
+        "I04",
+        "I11",
+        "I15"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-OBS03",
+      "title": "Hierarchical accounting reconciliation",
+      "work_item": "W7",
+      "status": "not_executed",
+      "required_evidence_level": "process_e2e",
+      "setup": "Host, parent VM and child workload counters with known nested boundaries.",
+      "exercise_or_fault": "Aggregate parent plus children and inject counter reset/missing sample.",
+      "assertions": [
+        "No double-counted total; null is not zero; reset handled.",
+        "Allocation residual and quality exported explicitly."
+      ],
+      "positive_control": "Independent direct totals reconcile on synthetic trace.",
+      "invariants": [
+        "I15",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-OBS04",
+      "title": "Observer overhead",
+      "work_item": "W7",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Paired workload with approved metrics sampling variants.",
+      "exercise_or_fault": "Compare instrumented runs while holding security and workload constant.",
+      "assertions": [
+        "Observer CPU/memory/storage/network included.",
+        "No exclusion of metric service from cost."
+      ],
+      "positive_control": "Low-cost valid sampling preserves oracle visibility.",
+      "invariants": [
+        "I15",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PERF01",
+      "title": "Tail latency under saturation",
+      "work_item": "W7",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Seeded open-loop arrivals and closed-loop user flows.",
+      "exercise_or_fault": "Increase load through capacity, with queued and refused work.",
+      "assertions": [
+        "Latency includes scheduled arrival delay.",
+        "Drops/errors/unknown outcomes in denominator; no percentile averaging."
+      ],
+      "positive_control": "Below-capacity successful throughput is reported.",
+      "invariants": [
+        "I15",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PERF02",
+      "title": "Noisy neighbor fairness",
+      "work_item": "W7",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Two small accounts plus heavy import/build account.",
+      "exercise_or_fault": "CPU, memory, I/O and network stress by heavy account.",
+      "assertions": [
+        "Interactive and ingestion thresholds measured under admitted load.",
+        "No sole-copy loss/OOM hidden as successful shedding."
+      ],
+      "positive_control": "Resource policy restores bounded service fairness.",
+      "invariants": [
+        "I07",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PERF03",
+      "title": "Secure cost comparison",
+      "work_item": "W9",
+      "status": "not_executed",
+      "required_evidence_level": "confidential_baremetal",
+      "setup": "Equal workload/model/retention/security baseline and candidate.",
+      "exercise_or_fault": "Try omitting standby, failed starts, backups or identity overhead; change model quality silently.",
+      "assertions": [
+        "Comparison marked invalid or separate assumption.",
+        "Fully allocated and marginal views separated; unknown price is null."
+      ],
+      "positive_control": "Complete equal-contract comparison reports cost range.",
+      "invariants": [
+        "I15",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PERF04",
+      "title": "Hardware-context release",
+      "work_item": "W9",
+      "status": "not_executed",
+      "required_evidence_level": "confidential_baremetal",
+      "setup": "Actual confidential host with tracked active/pause/deallocate states.",
+      "exercise_or_fault": "Pause, checkpoint, stop and destroy workloads/outer guests.",
+      "assertions": [
+        "Real resource/context release recorded, not inferred from process status.",
+        "Hardware limit not confused with application key count."
+      ],
+      "positive_control": "Fresh allocation works after confirmed release.",
+      "invariants": [
+        "I14",
+        "I15"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PERF05",
+      "title": "Cohort loss and reconnect storm",
+      "work_item": "W9",
+      "status": "not_executed",
+      "required_evidence_level": "confidential_baremetal",
+      "setup": "Declared shared-CVM cohort and failover headroom.",
+      "exercise_or_fault": "Lose parent host; reconnect clients/connectors simultaneously.",
+      "assertions": [
+        "Availability and cost include replacement/quarantine/headroom.",
+        "No duplicated mutable session, task or approval."
+      ],
+      "positive_control": "Orderly restored permitted cohort reaches readiness.",
+      "invariants": [
+        "I07",
+        "I14",
+        "I16"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PERF06",
+      "title": "Measured versus simulated evidence",
+      "work_item": "W7",
+      "status": "not_executed",
+      "required_evidence_level": "process_e2e",
+      "setup": "Results with mixed model/provider/hardware fidelity.",
+      "exercise_or_fault": "Attempt to publish simulated speed or estimated cost as measured confidential result.",
+      "assertions": [
+        "Schema/report labels preserve each fidelity and assumptions.",
+        "Missing supporting hardware evidence blocks G2/G5 claim."
+      ],
+      "positive_control": "Properly labeled analytical sensitivity can still be published.",
+      "invariants": [
+        "I15"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PLAT01",
+      "title": "Ordinary-host secret boundary",
+      "work_item": "W2",
+      "status": "not_executed",
+      "required_evidence_level": "confidential_baremetal",
+      "setup": "Real CVM deployment with selected interception/issuance topology.",
+      "exercise_or_fault": "Inspect outside-host configs/logs/network dumps using synthetic secret canaries.",
+      "assertions": [
+        "No plaintext secret/operational root is intentionally outside accepted TEE.",
+        "Metadata/parent trust residual is documented."
+      ],
+      "positive_control": "Inside authorized endpoint can complete test use.",
+      "invariants": [
+        "I02",
+        "I11",
+        "I14"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PLAT02",
+      "title": "Free and offline predecessor preservation",
+      "work_item": "W8",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "Free web-only, desktop keeper and cloud-unready accounts.",
+      "exercise_or_fault": "Enable internal-layer rollout and disconnect keeper.",
+      "assertions": [
+        "Native phone Matrix and required free portals remain.",
+        "No free account forced into hosted custody or new model route."
+      ],
+      "positive_control": "Supported keeper-backed thin path works after ready.",
+      "invariants": [
+        "I09"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    },
+    {
+      "id": "WS-PLAT03",
+      "title": "Per-cell compatibility gate",
+      "work_item": "W8",
+      "status": "not_executed",
+      "required_evidence_level": "vm_e2e",
+      "setup": "One validated Linux transport/egress/identity profile.",
+      "exercise_or_fault": "Attempt untested Windows/Cua/shared-CVM/snapshot combination.",
+      "assertions": [
+        "No inherited approval from another deployment cell.",
+        "Capability explicitly unavailable with preserved state."
+      ],
+      "positive_control": "Validated cell remains enabled.",
+      "invariants": [
+        "I14",
+        "I15"
+      ],
+      "evidence_required": [
+        "exact code/image/policy pins",
+        "sanitized named-boundary event timeline",
+        "receiver or independent provider oracle",
+        "resource/counter coverage where relevant"
+      ]
+    }
+  ]
+}

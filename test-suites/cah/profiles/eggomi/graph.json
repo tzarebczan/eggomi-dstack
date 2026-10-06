@@ -8,6 +8,7 @@
     {"role": "credential-broker", "kind": "server", "instance_id": "broker-1", "boot_id": "boot-broker-1"},
     {"role": "connector", "kind": "server", "instance_id": "connector-1", "boot_id": "boot-connector-1"},
     {"role": "browser-guard", "kind": "client", "instance_id": "browser-1", "boot_id": "boot-browser-1"},
+    {"role": "browser-guard", "kind": "client", "instance_id": "browser-2", "boot_id": "boot-browser-2"},
     {"role": "omi-runner", "kind": "client", "instance_id": "omi-1", "boot_id": "boot-omi-1"},
     {"role": "platform-launcher", "kind": "client", "instance_id": "launcher-1", "boot_id": "boot-launcher-1"}
   ],

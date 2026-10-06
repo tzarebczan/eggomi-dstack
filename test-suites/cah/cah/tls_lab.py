@@ -82,7 +82,7 @@ def issue_lab(
         csr_path = stem.with_suffix(".csr")
         cert_path = stem.with_suffix(".crt")
         ext_path = stem.with_suffix(".ext")
-        uri = f"spiffe://{trust_domain}/tenant/{tenant}/service/{role}/instance/{instance_id}"
+        uri = f"spiffe://{trust_domain}/tenant/{tenant}/role/{role}/instance/{instance_id}"
         ext_path.write_text(
             "basicConstraints=CA:FALSE\n"
             "extendedKeyUsage=serverAuth,clientAuth\n"

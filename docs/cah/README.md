@@ -21,15 +21,29 @@ length-prefixed JSON RPC. Unix `SO_PEERCRED` and lab mTLS both resolve to the
 same admission registry. The registry is written by the launcher. Servers
 reload it from disk.
 
-`keeper-core` issues an opaque use-grant. `credential-broker` asks keeper to
-resolve that grant, then releases one synthetic fill to `browser-guard`. A
-copied grant presented by the wrong role, a grant whose recipient boot id has
-changed, an unadmitted certificate, and a connector with no allow edge are
-refused. Mismatches leave the grant issued. A second redeem of a consumed
-grant returns `grant_consumed`.
+`keeper-core` issues an opaque use-grant from its own policy. The requester
+cannot choose origin, lease, or recipient; a forged origin is
+`denied_payload` and stores nothing. `credential-broker` asks keeper to
+resolve that grant, then releases one synthetic fill to the bound
+`browser-guard`. An `omi-runner` call to the broker is `denied_role` on the
+access graph and does not inspect the grant. A second admitted browser that
+presents the same `grant_ref` is `denied_recipient` at resolve. Those are
+different checks. A boot id only advances, and a generation mismatch is
+`revoked_boot`. An unadmitted certificate and a connector with no allow edge
+are refused. Role, instance, and frame mismatches leave the grant issued. A
+second redeem of a consumed grant returns `grant_consumed`.
+
+The authority rules, including why `get_secret` and keeper
+checkpoint-as-scaling are not this model, are in
+[authority-model.md](authority-model.md).
 
 The fill demo does not enter the guest. `CAH_MODE=outer` runs S0 and then
-exits. S0 does not inject these stubs.
+exits. S0 does not inject these stubs. The report names `ws_sim_id`
+`WS-SIM06` (`browser-signin`) as the catalog port and `ws1_evidence`
+`process_e2e`. The run refuses a hostile navigation and fills the bound
+browser. It does not execute profile attach, profile commit, or WS-LIFE04,
+and it is not `vm_e2e` or a confidential-hardware claim. A simulated SNP
+boot, when the host can launch it, is `vm_e2e`.
 
 ## Run
 
@@ -49,8 +63,8 @@ CAH_TRANSPORT=mtls ./test-suites/cah/scripts/host-native-fill.sh
 | `EGGOMI_DEV_IMAGE` | unset | Development image name for S0. The fill demo ignores it for guest injection. |
 
 A passing run prints `{"evidence_level": "E1", "ok": true}` and writes
-`report.json` plus `measurements.json`. The synthetic fill value appears only
-in `results/positive_fill.json`.
+`report.json` plus `measurements.json`. The synthetic fill value appears only in `results/positive_fill.json` and
+`results/copied_owner_fill.json`.
 
 ## Authorization
 
@@ -65,12 +79,16 @@ instance, and boot. A wrong role does not consume the token.
 RPC bodies that carry `role`, `boot_id`, `instance_id`, `cert_fingerprint`,
 `caller`, or `spiffe_id` are `denied_authority_field`. Lab certificates use a
 SPIFFE URI SAN of the form
-`spiffe://lab.cah/tenant/<tenant>/service/<role>/instance/<instance>`. The
-certificate CN is ignored. A certificate absent from the registry is
+`spiffe://lab.cah/tenant/<tenant>/role/<role>/instance/<instance>`. The
+certificate CN is ignored. Clients that use mTLS pin the full SPIFFE id and
+the certificate fingerprint. A certificate absent from the registry is
 `denied_unadmitted`.
 
-On this lab host the processes share a uid, so the admission file and the lab
-CA key are readable by every stub. That is an E1 limit. It is not a
+Non-keeper processes run in a user and mount namespace that hides
+`state/authority` (policy, journal, lab CA key) and other role keys.
+`admission.json` is read-only inside that namespace. Keeper stays unconfined
+because it owns those files. The processes still share a uid, and same-uid
+ptrace is not additionally blocked. That is an E1 limit. It is not a
 confidentiality claim.
 
 ## Measurements
@@ -78,13 +96,17 @@ confidentiality claim.
 Records use `resource-measurement/v1`. The schema file is the pinned WSE 1.0
 copy described in [`test-suites/cah/schemas/PROVENANCE.md`](../../test-suites/cah/schemas/PROVENANCE.md).
 `origin` is `measured`, `estimated`, `simulated`, or `unavailable`. An
-unavailable sample has `value: null` and `sample_count: 0`. Summing present
-samples skips unavailable rows and yields no total when every row is
-unavailable.
+unavailable sample has `value: null` and `sample_count: 0`. `sum_present`
+refuses to add one metric across different scopes or roles. If any selected
+row is unavailable, the total is null rather than a partial sum.
+`tls_handshake_seconds` is unavailable on both transports until a handshake
+timer exists. The emitter still uses this WSE 1.0 schema. WS1 metric names
+are pinned and not yet the wire format.
 
 ## Deferred
 
 SPIRE, real `AF_VSOCK`, nested smolvm, injecting stubs into the S0 guest,
-wiring Eggomi application code, an E3 hardware run, and a byte pin of the
-WS1 revision 1 contract zip are deferred. J01–J14 stay retired journey ids.
-`ws_sim_id` stays empty until that catalog is attached.
+wiring Eggomi application code, an E3 hardware run, and a full migration onto
+`eggomi_*` metric names are deferred. The WS1 revision 1 contract zip is
+pinned in the [integration manifest](integration-manifest.md). J01–J14 stay
+retired journey ids.

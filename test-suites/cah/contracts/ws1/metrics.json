@@ -1,0 +1,349 @@
+{
+  "schema_version": "eggomi/workload-metrics/v1",
+  "status": "proposed_not_measured",
+  "sample_required_fields": [
+    "run_id",
+    "monotonic_time_ns",
+    "measurement_source",
+    "quality",
+    "component_handle",
+    "boot_generation",
+    "metric",
+    "value",
+    "unit",
+    "aggregation_boundary"
+  ],
+  "quality_values": [
+    "observed",
+    "estimated",
+    "unavailable",
+    "partial"
+  ],
+  "missing_value": null,
+  "shared_label_allowlist": [
+    "role",
+    "deployment_profile",
+    "release_cohort",
+    "region_class",
+    "outcome_class",
+    "scenario_class"
+  ],
+  "private_only_dimensions": [
+    "tenant_handle",
+    "task_handle",
+    "operation_handle",
+    "workload_instance",
+    "host_mapping"
+  ],
+  "forbidden_export_fields": [
+    "prompt",
+    "body",
+    "subject",
+    "contact_name",
+    "url",
+    "dom",
+    "screenshot",
+    "sql_parameters",
+    "secret",
+    "access_token",
+    "refresh_token",
+    "raw_exception",
+    "private_trace_baggage"
+  ],
+  "metrics": [
+    {
+      "name": "eggomi_cpu_seconds",
+      "kind": "counter",
+      "unit": "s",
+      "source": "cgroup cpu.stat usage_usec converted to seconds",
+      "aggregation": "delta with reset handling; inclusive ancestry recorded"
+    },
+    {
+      "name": "eggomi_cpu_throttled_seconds",
+      "kind": "counter",
+      "unit": "s",
+      "source": "cgroup cpu.stat where available",
+      "aggregation": "delta; absence is null/unavailable"
+    },
+    {
+      "name": "eggomi_memory_current_bytes",
+      "kind": "gauge",
+      "unit": "By",
+      "source": "cgroup memory.current",
+      "aggregation": "sample/integrate; do not sum parent and child"
+    },
+    {
+      "name": "eggomi_memory_peak_bytes",
+      "kind": "gauge",
+      "unit": "By",
+      "source": "cgroup memory.peak or explicitly sampled peak",
+      "aggregation": "max; source distinguishes sampled versus kernel peak"
+    },
+    {
+      "name": "eggomi_guest_allocated_bytes",
+      "kind": "gauge",
+      "unit": "By",
+      "source": "trusted VMM allocation inventory",
+      "aggregation": "integral; not application RSS"
+    },
+    {
+      "name": "eggomi_process_rss_bytes",
+      "kind": "gauge",
+      "unit": "By",
+      "source": "proc/cgroup process collector where permitted",
+      "aggregation": "sum only with known overlap; source/coverage retained"
+    },
+    {
+      "name": "eggomi_process_pss_bytes",
+      "kind": "gauge",
+      "unit": "By",
+      "source": "proc smaps_rollup where available",
+      "aggregation": "sample; do not equate to guest reservation"
+    },
+    {
+      "name": "eggomi_memory_pressure_seconds",
+      "kind": "counter",
+      "unit": "s",
+      "source": "PSI memory cumulative total",
+      "aggregation": "delta; some/full classification required"
+    },
+    {
+      "name": "eggomi_oom_events",
+      "kind": "counter",
+      "unit": "1",
+      "source": "cgroup memory.events",
+      "aggregation": "delta with boundary/ancestry"
+    },
+    {
+      "name": "eggomi_io_read_bytes",
+      "kind": "counter",
+      "unit": "By",
+      "source": "cgroup io.stat or measured storage adapter",
+      "aggregation": "delta; source defines cache/backend semantics"
+    },
+    {
+      "name": "eggomi_io_write_bytes",
+      "kind": "counter",
+      "unit": "By",
+      "source": "cgroup io.stat or measured storage adapter",
+      "aggregation": "delta; no cross-layer double billing"
+    },
+    {
+      "name": "eggomi_storage_bytes",
+      "kind": "gauge",
+      "unit": "By",
+      "source": "trusted archive/profile/object inventory",
+      "aggregation": "category required: archive,index,journal,profile,artifact,backup,temp,model"
+    },
+    {
+      "name": "eggomi_commit_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "application durable transaction instrument",
+      "aggregation": "histogram merge, per state class; never include values"
+    },
+    {
+      "name": "eggomi_network_bytes",
+      "kind": "counter",
+      "unit": "By",
+      "source": "trusted network boundary",
+      "aggregation": "direction/class labels; avoid counting inner and outer twice"
+    },
+    {
+      "name": "eggomi_connections",
+      "kind": "gauge",
+      "unit": "1",
+      "source": "trusted network/connector collector",
+      "aggregation": "current by bounded service/protocol class"
+    },
+    {
+      "name": "eggomi_reconnects",
+      "kind": "counter",
+      "unit": "1",
+      "source": "connector lifecycle",
+      "aggregation": "delta; cause enum"
+    },
+    {
+      "name": "eggomi_tls_handshakes",
+      "kind": "counter",
+      "unit": "1",
+      "source": "TLS endpoint",
+      "aggregation": "delta; result enum"
+    },
+    {
+      "name": "eggomi_identity_issuance_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "accepted identity adapter",
+      "aggregation": "queue and service components identified"
+    },
+    {
+      "name": "eggomi_attestation_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "attestation adapter",
+      "aggregation": "fresh versus cached distinguished"
+    },
+    {
+      "name": "eggomi_policy_decisions",
+      "kind": "counter",
+      "unit": "1",
+      "source": "receiver verifier",
+      "aggregation": "decision and reason enums; no resource plaintext"
+    },
+    {
+      "name": "eggomi_credential_uses",
+      "kind": "counter",
+      "unit": "1",
+      "source": "credential broker",
+      "aggregation": "kind/outcome only; no value or account label in shared metrics"
+    },
+    {
+      "name": "eggomi_rpc_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "authenticated RPC endpoint",
+      "aggregation": "method class and outcome; queue-inclusive client span separately"
+    },
+    {
+      "name": "eggomi_archive_query_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "bounded query API",
+      "aggregation": "dataset/window/cache mode in lab manifest"
+    },
+    {
+      "name": "eggomi_loaded_collection_rows",
+      "kind": "gauge",
+      "unit": "1",
+      "source": "TanStack client instrumentation",
+      "aggregation": "collection class only; selected versus total archive"
+    },
+    {
+      "name": "eggomi_browser_tabs",
+      "kind": "gauge",
+      "unit": "1",
+      "source": "trusted browser guard",
+      "aggregation": "active tab count; no URLs"
+    },
+    {
+      "name": "eggomi_browser_ready_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "launcher and fixture oracle",
+      "aggregation": "warm/cold and phase decomposition retained"
+    },
+    {
+      "name": "eggomi_browser_input_latency_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "deterministic browser fixture",
+      "aggregation": "input to observable response; content-free"
+    },
+    {
+      "name": "eggomi_profile_io_bytes",
+      "kind": "counter",
+      "unit": "By",
+      "source": "profile attach/promote adapter",
+      "aggregation": "read/write/staging categories"
+    },
+    {
+      "name": "eggomi_omi_context_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "authorized context assembler",
+      "aggregation": "source/coverage status without raw sources"
+    },
+    {
+      "name": "eggomi_model_queue_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "model route adapter",
+      "aggregation": "stub/local/confidential/external mode recorded"
+    },
+    {
+      "name": "eggomi_model_first_token_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "model route adapter",
+      "aggregation": "request to first valid token; queue separated and included in total"
+    },
+    {
+      "name": "eggomi_model_tokens",
+      "kind": "counter",
+      "unit": "1",
+      "source": "model response accounting",
+      "aggregation": "input/output, measurement versus estimate distinguished"
+    },
+    {
+      "name": "eggomi_task_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "submission and durable completion journal",
+      "aggregation": "intended submission to completion, includes queue; waits separated"
+    },
+    {
+      "name": "eggomi_approval_wait_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "approval protocol",
+      "aggregation": "human wait distinct from CPU time"
+    },
+    {
+      "name": "eggomi_operation_outcomes",
+      "kind": "counter",
+      "unit": "1",
+      "source": "dispatcher plus independent provider oracle",
+      "aggregation": "offered,admitted,dispatched,accepted,complete,unknown,rejected,dropped"
+    },
+    {
+      "name": "eggomi_revocation_enforcement_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "control update and actual receiver/provider oracle",
+      "aggregation": "known-local and end-to-end separated"
+    },
+    {
+      "name": "eggomi_workload_state_seconds",
+      "kind": "counter",
+      "unit": "s",
+      "source": "trusted lifecycle state accounting",
+      "aggregation": "role and lifecycle state; no double-counted overlapping states"
+    },
+    {
+      "name": "eggomi_teardown_duration_seconds",
+      "kind": "histogram",
+      "unit": "s",
+      "source": "stop request to confirmed resource release",
+      "aggregation": "quarantine included until confirmed release"
+    },
+    {
+      "name": "eggomi_hardware_contexts_active",
+      "kind": "gauge",
+      "unit": "1",
+      "source": "actual host confidential-context inventory",
+      "aggregation": "availability/source required; no inference from user count"
+    },
+    {
+      "name": "eggomi_host_energy_kwh",
+      "kind": "counter",
+      "unit": "kW.h",
+      "source": "metered host power integration",
+      "aggregation": "measured or estimate label; no fake precision"
+    },
+    {
+      "name": "eggomi_observer_cpu_seconds",
+      "kind": "counter",
+      "unit": "s",
+      "source": "metering/harness cgroups",
+      "aggregation": "delta; included in total cost"
+    },
+    {
+      "name": "eggomi_observer_output_bytes",
+      "kind": "counter",
+      "unit": "By",
+      "source": "collector export",
+      "aggregation": "delta; include storage/network overhead"
+    }
+  ]
+}

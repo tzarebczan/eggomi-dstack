@@ -24,9 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .confine import popen_confined
+from .grants import revoke_instance_grants
 from .metrics import load_schema, measurement, sum_present, validate_record
 from .registry import (
     AdmissionRegistry,
+    BindResult,
     bind_process,
     load_registry,
     save_registry,
@@ -48,9 +51,11 @@ SERVERS = (
 )
 CLIENTS = (
     ("browser-guard", "browser-1", "boot-browser-1"),
+    ("browser-guard", "browser-2", "boot-browser-2"),
     ("omi-runner", "omi-1", "boot-omi-1"),
     ("platform-launcher", "launcher-1", "boot-launcher-1"),
 )
+FILL_RESULTS = frozenset({"positive_fill.json", "copied_owner_fill.json"})
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -58,7 +63,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="run the CAH host-native fill demo")
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--transport", choices=("unix", "mtls"), default="unix")
-    parser.add_argument("--grant-ttl", type=float, default=120)
+    parser.add_argument("--grant-ttl", type=float, default=60)
     args = parser.parse_args(argv)
     report = run_demo(args.state, args.transport, args.grant_ttl)
     print(
@@ -70,7 +75,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     return 0 if report["ok"] else 1
 
 
-def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, Any]:
+def run_demo(state: Path, transport: str, grant_ttl: float = 60) -> Dict[str, Any]:
     """Execute positive fill and refusal cases. Return the run report."""
     if state.exists():
         shutil.rmtree(state)
@@ -78,12 +83,24 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, A
     started = time.time()
     interval_start = datetime.now(timezone.utc).isoformat()
     material: Optional[LabMaterial] = None
+    authority = state / "authority"
+    authority.mkdir(mode=0o700)
+    (state / "roles").mkdir()
     instances = [(role, instance) for role, instance, _boot in SERVERS + CLIENTS]
     instances.append(("browser-guard", "stranger-1"))
     if transport == "mtls":
-        material = issue_lab(state / "certs", TRUST_DOMAIN, TENANT, instances)
+        material = issue_lab(authority / "certs", TRUST_DOMAIN, TENANT, instances)
+        public = state / "public"
+        public.mkdir()
+        shutil.copyfile(material.ca_cert, public / "ca.crt")
+        for _role, instance in instances:
+            _export_material(state, material, instance)
+    policy_path = authority / "keeper-policy.json"
+    shutil.copyfile(PROFILE / "keeper-policy.json", policy_path)
+    os.chmod(policy_path, 0o600)
     _write_registry(state, material)
     access = PROFILE / "service-access.json"
+    pins = _server_pins(material)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PACKAGE_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["PYTHONUNBUFFERED"] = "1"
@@ -104,6 +121,9 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, A
             access,
             "",
             grant_ttl,
+            pins,
+            policy_path,
+            confine=False,
         )
         broker_addr = _start_server(
             procs,
@@ -117,6 +137,9 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, A
             access,
             keeper_addr,
             grant_ttl,
+            pins,
+            policy_path,
+            confine=True,
         )
         broker_pid = procs[-1].pid
         connector_addr = _start_server(
@@ -131,6 +154,9 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, A
             access,
             "",
             grant_ttl,
+            pins,
+            policy_path,
+            confine=True,
         )
         broker_public = broker_addr
         vsock_label = ""
@@ -142,8 +168,46 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, A
             # The unix path is the compartment channel. The placeholder is
             # still constructed against a discard upstream in the unit tests.
             vsock_label = "not-used"
+        held = {
+            "browser-1": _hold_client(
+                procs,
+                logs,
+                state,
+                env,
+                transport,
+                material,
+                "browser-guard",
+                "browser-1",
+                keeper_addr,
+                broker_public,
+                connector_addr,
+                pins,
+            ),
+            "browser-2": _hold_client(
+                procs,
+                logs,
+                state,
+                env,
+                transport,
+                material,
+                "browser-guard",
+                "browser-2",
+                keeper_addr,
+                broker_public,
+                connector_addr,
+                pins,
+            ),
+        }
         cases = _run_cases(
-            state, env, transport, material, keeper_addr, broker_public, connector_addr
+            state,
+            env,
+            transport,
+            material,
+            keeper_addr,
+            broker_public,
+            connector_addr,
+            held,
+            pins,
         )
         canary_hits = _canary_hits(state)
         measurements = _measurements(
@@ -171,7 +235,9 @@ def run_demo(state: Path, transport: str, grant_ttl: float = 120) -> Dict[str, A
             "profile": "eggomi",
             "scenario_port": "fill-v1",
             "retired_scenario_alias": "J06",
-            "ws_sim_id": None,
+            "ws_sim_id": "WS-SIM06",
+            "ws1_evidence": "process_e2e",
+            "confinement": "user-mount-namespace",
             "pristine_templates_only": True,
             "spire": "deferred",
             "nested_smolvm": "deferred",
@@ -225,10 +291,16 @@ def _run_cases(
     keeper: str,
     broker: str,
     connector: str,
+    held: Dict[str, Dict[str, Any]],
+    pins: Dict[str, Dict[str, str]],
 ) -> List[Dict[str, str]]:
     cases: List[Dict[str, str]] = []
 
-    def case(
+    def record(name: str, expect: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        cases.append({"name": name, "expect": expect, "actual": str(result["code"])})
+        return result
+
+    def oneshot(
         name: str,
         mode: str,
         role: str,
@@ -240,8 +312,8 @@ def _run_cases(
         token: Optional[str] = None,
         admit: bool = True,
         stranger: bool = False,
+        origin: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run one client process and record the RPC code."""
         result = _client(
             state,
             env,
@@ -259,26 +331,56 @@ def _run_cases(
             token,
             admit,
             stranger,
+            pins,
+            origin,
         )
-        cases.append({"name": name, "expect": expect, "actual": str(result["code"])})
-        return result
+        return record(name, expect, result)
 
-    case(
+    def held_case(
+        name: str,
+        instance: str,
+        mode: str,
+        expect: str,
+        *,
+        operation_id: str = "op-positive",
+        grant_ref: Optional[str] = None,
+        navigation_generation: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        result = _submit(
+            state,
+            held[instance],
+            name,
+            mode,
+            operation_id,
+            grant_ref,
+            navigation_generation,
+        )
+        return record(name, expect, result)
+
+    oneshot(
         "smuggle_authority_field",
         "smuggle",
         "omi-runner",
         "omi-1",
         "denied_authority_field",
     )
-    case(
+    held_case(
         "browser_cannot_prepare",
-        "prepare",
-        "browser-guard",
         "browser-1",
+        "prepare",
         "denied_role",
         operation_id="op-browser",
     )
-    prepared = case(
+    oneshot(
+        "forged_origin",
+        "prepare",
+        "omi-runner",
+        "omi-1",
+        "denied_payload",
+        operation_id="op-positive",
+        origin="https://attacker.example",
+    )
+    prepared = oneshot(
         "prepare_positive",
         "prepare",
         "omi-runner",
@@ -286,11 +388,20 @@ def _run_cases(
         "ok",
         operation_id="op-positive",
     )
-    filled = case(
-        "positive_fill",
-        "fill",
-        "browser-guard",
+    held_case(
+        "hostile_navigation",
         "browser-1",
+        "fill",
+        "denied_payload",
+        operation_id="op-positive",
+        grant_ref=str(prepared["grant_ref"]),
+        navigation_generation="nav-replaced",
+    )
+    _expect_disposition(state, cases, "op-positive", "issued", "hostile_left_issued")
+    filled = held_case(
+        "positive_fill",
+        "browser-1",
+        "fill",
         "ok",
         operation_id="op-positive",
         grant_ref=str(prepared["grant_ref"]),
@@ -299,24 +410,29 @@ def _run_cases(
         cases.append(
             {"name": "positive_fill_value", "expect": "present", "actual": "missing"}
         )
-    case(
+    held_case(
         "outcome",
-        "outcome",
-        "browser-guard",
         "browser-1",
+        "outcome",
         "ok",
         operation_id="op-positive",
     )
-    case(
+    held_case(
+        "outcome_other_browser",
+        "browser-2",
+        "outcome",
+        "denied_payload",
+        operation_id="op-positive",
+    )
+    held_case(
         "replay_consumed",
-        "fill",
-        "browser-guard",
         "browser-1",
+        "fill",
         "grant_consumed",
         operation_id="op-positive",
         grant_ref=str(prepared["grant_ref"]),
     )
-    copied = case(
+    copied = oneshot(
         "prepare_copied",
         "prepare",
         "omi-runner",
@@ -324,7 +440,7 @@ def _run_cases(
         "ok",
         operation_id="op-copied",
     )
-    case(
+    oneshot(
         "copied_wrong_role",
         "steal",
         "omi-runner",
@@ -333,7 +449,25 @@ def _run_cases(
         operation_id="op-copied",
         grant_ref=str(copied["grant_ref"]),
     )
-    boot_grant = case(
+    _expect_disposition(state, cases, "op-copied", "issued", "wrong_role_left_issued")
+    held_case(
+        "copied_second_browser",
+        "browser-2",
+        "fill",
+        "denied_recipient",
+        operation_id="op-copied",
+        grant_ref=str(copied["grant_ref"]),
+    )
+    _expect_disposition(state, cases, "op-copied", "issued", "copied_left_issued")
+    held_case(
+        "copied_owner_fill",
+        "browser-1",
+        "fill",
+        "ok",
+        operation_id="op-copied",
+        grant_ref=str(copied["grant_ref"]),
+    )
+    boot_grant = oneshot(
         "prepare_wrong_boot",
         "prepare",
         "omi-runner",
@@ -341,18 +475,23 @@ def _run_cases(
         "ok",
         operation_id="op-boot",
     )
-    set_boot(state / "admission.json", "browser-1", "boot-browser-2")
-    case(
-        "wrong_boot",
-        "fill",
-        "browser-guard",
+    set_boot(state / "admission.json", "browser-1", "boot-browser-1-next")
+    revoke_instance_grants(
+        state / "authority" / "grants.json",
+        state / "authority" / "authority-journal.jsonl",
+        state / "authority" / "keeper-epoch",
         "browser-1",
+    )
+    held_case(
+        "wrong_boot",
+        "browser-1",
+        "fill",
         "denied_boot",
         operation_id="op-boot",
         grant_ref=str(boot_grant["grant_ref"]),
     )
-    case("connector_default_deny", "poke", "omi-runner", "omi-1", "denied_role")
-    case(
+    oneshot("connector_default_deny", "poke", "omi-runner", "omi-1", "denied_role")
+    oneshot(
         "unadmitted",
         "prepare",
         "browser-guard",
@@ -363,7 +502,7 @@ def _run_cases(
         stranger=True,
     )
     token = _write_bootstrap(state)
-    case(
+    oneshot(
         "bootstrap_wrong_role",
         "bootstrap-steal",
         "omi-runner",
@@ -371,7 +510,7 @@ def _run_cases(
         "denied_role",
         token=token,
     )
-    case(
+    oneshot(
         "bootstrap_wrong_scope",
         "bootstrap-scope",
         "platform-launcher",
@@ -379,7 +518,7 @@ def _run_cases(
         "denied_bootstrap",
         token=token,
     )
-    case(
+    oneshot(
         "bootstrap_ok",
         "bootstrap",
         "platform-launcher",
@@ -387,7 +526,7 @@ def _run_cases(
         "ok",
         token=token,
     )
-    case(
+    oneshot(
         "bootstrap_replay",
         "bootstrap",
         "platform-launcher",
@@ -415,74 +554,52 @@ def _client(
     token: Optional[str],
     admit: bool,
     stranger: bool,
+    pins: Dict[str, Dict[str, str]],
+    origin: Optional[str],
 ) -> Dict[str, Any]:
-    fixture = json.loads((PROFILE / "fill-fixture.json").read_text(encoding="utf-8"))
-    fixture["operation_id"] = operation_id
+    fixture = _fixture(operation_id, origin)
+    if mode.startswith("bootstrap"):
+        fixture.update(_bootstrap_fields())
     fixture_path = state / "fixtures" / f"{case}.json"
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
     fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
-    grant_path = None
-    if grant_ref is not None:
-        grant_path = state / "fixtures" / f"{case}.grant"
-        grant_path.write_text(grant_ref + "\n", encoding="utf-8")
-    cmd = [
-        sys.executable,
-        "-m",
-        "cah.client",
-        "--state",
-        str(state),
-        "--case",
-        case,
-        "--mode",
-        mode,
-        "--transport",
+    cmd = _client_cmd(
+        state,
         transport,
-        "--keeper",
+        material,
         keeper,
-        "--broker",
         broker,
-        "--connector",
         connector,
-        "--fixture",
-        str(fixture_path),
-    ]
-    if grant_path is not None:
-        cmd.extend(["--grant-file", str(grant_path)])
-    if transport == "mtls":
-        if material is None:
-            raise RuntimeError("mtls transport is missing lab certificates")
-        issued = material.for_instance(instance)
-        cmd.extend(
-            [
-                "--cert",
-                str(issued.cert_path),
-                "--key",
-                str(issued.key_path),
-                "--ca",
-                str(material.ca_cert),
-            ]
-        )
-        if stranger:
-            cmd.append("--unadmitted-cert")
+        case,
+        mode,
+        instance,
+        fixture_path,
+        grant_ref,
+        pins,
+        stranger,
+    )
     log_path = state / "logs" / f"{case}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.Popen(
+        proc = _spawn(
             cmd,
-            stdin=subprocess.PIPE if token is not None else subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
+            state,
+            instance,
+            env,
+            subprocess.PIPE if token is not None else subprocess.DEVNULL,
+            log,
+            log,
+            confine=True,
         )
         if admit and not stranger:
-            bind_process(state / "admission.json", instance, proc.pid)
+            _bind(state, instance, proc.pid)
         (state / "go" / str(proc.pid)).parent.mkdir(parents=True, exist_ok=True)
         (state / "go" / str(proc.pid)).write_text("go\n", encoding="utf-8")
         if token is not None and proc.stdin is not None:
             proc.stdin.write((token + "\n").encode("utf-8"))
             proc.stdin.close()
         try:
-            code = proc.wait(timeout=10)
+            code = proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
             proc.kill()
             raise RuntimeError(f"client {case} timed out") from None
@@ -490,6 +607,104 @@ def _client(
         detail = log_path.read_text(encoding="utf-8")
         raise RuntimeError(f"client {case} exited {code}: {detail}")
     return json.loads((state / "results" / f"{case}.json").read_text(encoding="utf-8"))
+
+
+def _hold_client(
+    procs: List[subprocess.Popen[bytes]],
+    logs: List[Any],
+    state: Path,
+    env: Dict[str, str],
+    transport: str,
+    material: Optional[LabMaterial],
+    role: str,
+    instance: str,
+    keeper: str,
+    broker: str,
+    connector: str,
+    pins: Dict[str, Dict[str, str]],
+) -> Dict[str, Any]:
+    """Start one browser process and keep its pid bound for later commands."""
+    del role
+    fixture_path = state / "fixtures" / f"{instance}-hold.json"
+    fixture_path.parent.mkdir(parents=True, exist_ok=True)
+    fixture_path.write_text("{}\n", encoding="utf-8")
+    cmd = _client_cmd(
+        state,
+        transport,
+        material,
+        keeper,
+        broker,
+        connector,
+        instance,
+        "agent",
+        instance,
+        fixture_path,
+        None,
+        pins,
+        False,
+    )
+    log_path = state / "logs" / f"{instance}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = log_path.open("w", encoding="utf-8")
+    logs.append(log)
+    proc = _spawn(
+        cmd,
+        state,
+        instance,
+        env,
+        subprocess.DEVNULL,
+        log,
+        log,
+        confine=True,
+    )
+    procs.append(proc)
+    _bind(state, instance, proc.pid)
+    (state / "go" / str(proc.pid)).parent.mkdir(parents=True, exist_ok=True)
+    (state / "go" / str(proc.pid)).write_text("go\n", encoding="utf-8")
+    return {"proc": proc, "instance": instance, "pid": proc.pid, "log": log_path}
+
+
+def _submit(
+    state: Path,
+    held: Dict[str, Any],
+    case: str,
+    mode: str,
+    operation_id: str,
+    grant_ref: Optional[str],
+    navigation_generation: Optional[str],
+) -> Dict[str, Any]:
+    fixture = _fixture(operation_id, None)
+    if navigation_generation is not None:
+        fixture["navigation_generation"] = navigation_generation
+    pid = int(held["pid"])
+    done = state / "done" / str(pid)
+    if done.exists():
+        done.unlink()
+    inbox = state / "inbox" / f"{pid}.json"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(
+        json.dumps(
+            {
+                "case": case,
+                "mode": mode,
+                "fixture": fixture,
+                "grant_ref": grant_ref,
+            }
+        ),
+        encoding="utf-8",
+    )
+    deadline = time.monotonic() + 20
+    proc: subprocess.Popen[bytes] = held["proc"]
+    while time.monotonic() < deadline:
+        if done.exists() and done.read_text(encoding="utf-8").strip() == case:
+            return json.loads(
+                (state / "results" / f"{case}.json").read_text(encoding="utf-8")
+            )
+        if proc.poll() is not None:
+            detail = Path(held["log"]).read_text(encoding="utf-8")
+            raise RuntimeError(f"held client {held['instance']} exited: {detail}")
+        time.sleep(0.02)
+    raise RuntimeError(f"held client {held['instance']} did not finish {case}")
 
 
 def _start_server(
@@ -504,6 +719,9 @@ def _start_server(
     access: Path,
     keeper: str,
     grant_ttl: float,
+    pins: Dict[str, Dict[str, str]],
+    policy_path: Path,
+    confine: bool,
 ) -> str:
     if transport == "unix":
         listen = "unix:" + str(state / "socks" / f"{role}.sock")
@@ -525,37 +743,246 @@ def _start_server(
         str(access),
         "--grant-ttl",
         str(grant_ttl),
+        "--registry",
+        str(state / "admission.json"),
+        "--authority",
+        str(state / "authority"),
     ]
     if keeper:
         cmd.extend(["--keeper", keeper])
+        pin = pins.get("keeper-core")
+        if pin:
+            cmd.extend(
+                [
+                    "--expect-domain",
+                    pin["domain"],
+                    "--expect-tenant",
+                    pin["tenant"],
+                    "--expect-role",
+                    pin["role"],
+                    "--expect-instance",
+                    pin["instance"],
+                    "--expect-fingerprint",
+                    pin["fingerprint"],
+                ]
+            )
+    if role == "keeper-core":
+        cmd.extend(["--policy", str(policy_path)])
+    if role == "credential-broker":
+        cmd.extend(["--resource-handle", "cred-lab-1"])
     if transport == "mtls":
-        if material is None:
-            raise RuntimeError("mtls transport is missing lab certificates")
-        issued = material.for_instance(instance)
-        cmd.extend(
-            [
-                "--cert",
-                str(issued.cert_path),
-                "--key",
-                str(issued.key_path),
-                "--ca",
-                str(material.ca_cert),
-            ]
-        )
+        cert, key, ca = _material_paths(state, material, instance)
+        cmd.extend(["--cert", str(cert), "--key", str(key), "--ca", str(ca)])
     log_path = state / "logs" / f"{role}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("w", encoding="utf-8")
     logs.append(log)
     stdin: Any = subprocess.PIPE if role == "credential-broker" else subprocess.DEVNULL
-    proc = subprocess.Popen(
-        cmd, stdin=stdin, stdout=log, stderr=subprocess.STDOUT, env=env
+    proc = _spawn(
+        cmd,
+        state,
+        instance,
+        env,
+        stdin,
+        log,
+        log,
+        confine=confine,
     )
     procs.append(proc)
     if role == "credential-broker" and proc.stdin is not None:
         proc.stdin.write((CANARY + "\n").encode("utf-8"))
         proc.stdin.close()
-    bind_process(state / "admission.json", instance, proc.pid)
+    _bind(state, instance, proc.pid)
     return _wait_ready(state, role, proc, log_path)
+
+
+def _spawn(
+    cmd: List[str],
+    state: Path,
+    instance: str,
+    env: Dict[str, str],
+    stdin: Any,
+    stdout: Any,
+    stderr: Any,
+    confine: bool,
+) -> subprocess.Popen[bytes]:
+    role_dir = state / "roles" / instance
+    role_dir.mkdir(parents=True, exist_ok=True)
+    if not confine:
+        return subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, env=env)
+    return popen_confined(
+        cmd,
+        hide_dirs=[state / "authority", state / "roles"],
+        keep_dirs=[role_dir],
+        ro_files=[state / "admission.json"],
+        env=env,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _client_cmd(
+    state: Path,
+    transport: str,
+    material: Optional[LabMaterial],
+    keeper: str,
+    broker: str,
+    connector: str,
+    case: str,
+    mode: str,
+    instance: str,
+    fixture_path: Path,
+    grant_ref: Optional[str],
+    pins: Dict[str, Dict[str, str]],
+    stranger: bool,
+) -> List[str]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "cah.client",
+        "--state",
+        str(state),
+        "--case",
+        case,
+        "--mode",
+        mode,
+        "--transport",
+        transport,
+        "--keeper",
+        keeper,
+        "--broker",
+        broker,
+        "--connector",
+        connector,
+        "--fixture",
+        str(fixture_path),
+    ]
+    if grant_ref is not None:
+        grant_path = state / "fixtures" / f"{case}.grant"
+        grant_path.write_text(grant_ref + "\n", encoding="utf-8")
+        cmd.extend(["--grant-file", str(grant_path)])
+    cmd.extend(_pin_args(pins))
+    if transport == "mtls":
+        cert, key, ca = _material_paths(state, material, instance)
+        cmd.extend(["--cert", str(cert), "--key", str(key), "--ca", str(ca)])
+        if stranger:
+            cmd.append("--unadmitted-cert")
+    return cmd
+
+
+def _pin_args(pins: Dict[str, Dict[str, str]]) -> List[str]:
+    if not pins:
+        return []
+    args = ["--expect-domain", TRUST_DOMAIN, "--expect-tenant", TENANT]
+    for role, flag in (
+        ("keeper-core", "keeper"),
+        ("credential-broker", "broker"),
+        ("connector", "connector"),
+    ):
+        pin = pins[role]
+        args.extend(
+            [
+                f"--{flag}-instance",
+                pin["instance"],
+                f"--{flag}-fp",
+                pin["fingerprint"],
+            ]
+        )
+    return args
+
+
+def _material_paths(
+    state: Path, material: Optional[LabMaterial], instance: str
+) -> tuple[Path, Path, Path]:
+    exported_cert = state / "roles" / instance / "cert.crt"
+    if exported_cert.exists():
+        return (
+            exported_cert,
+            state / "roles" / instance / "key.pem",
+            state / "public" / "ca.crt",
+        )
+    if material is None:
+        raise RuntimeError("mtls transport is missing lab certificates")
+    issued = material.for_instance(instance)
+    return issued.cert_path, issued.key_path, material.ca_cert
+
+
+def _fixture(operation_id: str, origin: Optional[str]) -> Dict[str, Any]:
+    fixture = json.loads((PROFILE / "fill-fixture.json").read_text(encoding="utf-8"))
+    fixture["operation_id"] = operation_id
+    if origin is not None:
+        fixture["origin"] = origin
+    return fixture
+
+
+def _bootstrap_fields() -> Dict[str, str]:
+    return {
+        "admit_role": "connector",
+        "admit_instance_id": "connector-scoped-1",
+        "admit_boot_id": "boot-connector-scoped-1",
+    }
+
+
+def _bind(state: Path, instance: str, pid: int) -> BindResult:
+    result = bind_process(state / "admission.json", instance, pid)
+    if result.kind == "rebound":
+        revoke_instance_grants(
+            state / "authority" / "grants.json",
+            state / "authority" / "authority-journal.jsonl",
+            state / "authority" / "keeper-epoch",
+            instance,
+        )
+    return result
+
+
+def _expect_disposition(
+    state: Path,
+    cases: List[Dict[str, str]],
+    operation_id: str,
+    disposition: str,
+    name: str,
+) -> None:
+    actual = _grant_by_operation(state, operation_id).get("disposition")
+    cases.append(
+        {
+            "name": name,
+            "expect": disposition,
+            "actual": str(actual),
+        }
+    )
+
+
+def _grant_by_operation(state: Path, operation_id: str) -> Dict[str, Any]:
+    raw = json.loads((state / "authority" / "grants.json").read_text(encoding="utf-8"))
+    for row in raw["grants"].values():
+        if row["task"]["operation_id"] == operation_id:
+            return row
+    raise KeyError(operation_id)
+
+
+def _export_material(state: Path, material: LabMaterial, instance: str) -> None:
+    dest = state / "roles" / instance
+    dest.mkdir(parents=True, exist_ok=True)
+    issued = material.for_instance(instance)
+    shutil.copyfile(issued.cert_path, dest / "cert.crt")
+    shutil.copyfile(issued.key_path, dest / "key.pem")
+    os.chmod(dest / "key.pem", 0o600)
+
+
+def _server_pins(material: Optional[LabMaterial]) -> Dict[str, Dict[str, str]]:
+    if material is None:
+        return {}
+    pins = {}
+    for role, instance, _boot in SERVERS:
+        pins[role] = {
+            "domain": TRUST_DOMAIN,
+            "tenant": TENANT,
+            "role": role,
+            "instance": instance,
+            "fingerprint": material.for_instance(instance).fingerprint,
+        }
+    return pins
 
 
 def _wait_ready(
@@ -587,10 +1014,15 @@ def _write_registry(state: Path, material: Optional[LabMaterial]) -> None:
                 "role": role,
                 "instance_id": instance,
                 "boot_id": boot,
+                "boot_generation": 1,
+                "boot_history": [boot],
                 "cert_fingerprint": fingerprint,
                 "pid": None,
+                "starttime": None,
             }
         )
+        (state / "roles" / instance).mkdir(parents=True, exist_ok=True)
+    (state / "roles" / "stranger-1").mkdir(parents=True, exist_ok=True)
     save_registry(
         state / "admission.json",
         AdmissionRegistry(
@@ -608,7 +1040,7 @@ def _write_bootstrap(state: Path) -> str:
         "admit_boot_id": "boot-connector-scoped-1",
         "used": False,
     }
-    path = state / "bootstrap-scope.json"
+    path = state / "authority" / "bootstrap-scope.json"
     path.write_text(
         json.dumps(scope, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -617,15 +1049,22 @@ def _write_bootstrap(state: Path) -> str:
 
 
 def _grant_dispositions(state: Path) -> bool:
-    raw = json.loads((state / "grants.json").read_text(encoding="utf-8"))
-    by_op = {row["task"]["operation_id"]: row for row in raw.values()}
+    raw = json.loads((state / "authority" / "grants.json").read_text(encoding="utf-8"))
+    by_op = {row["task"]["operation_id"]: row for row in raw["grants"].values()}
     if by_op["op-positive"]["disposition"] != "consumed":
         return False
-    if by_op["op-copied"]["disposition"] != "issued":
+    if by_op["op-copied"]["disposition"] != "consumed":
         return False
-    if by_op["op-boot"]["disposition"] != "issued":
+    if by_op["op-boot"]["disposition"] != "revoked_boot":
         return False
-    scope = json.loads((state / "bootstrap-scope.json").read_text(encoding="utf-8"))
+    if any(
+        row["policy"]["origin"] == "https://attacker.example"
+        for row in raw["grants"].values()
+    ):
+        return False
+    scope = json.loads(
+        (state / "authority" / "bootstrap-scope.json").read_text(encoding="utf-8")
+    )
     if scope.get("used") is not True:
         return False
     registry = load_registry(state / "admission.json")
@@ -638,7 +1077,7 @@ def _canary_hits(state: Path) -> List[str]:
     for path in state.rglob("*"):
         if not path.is_file():
             continue
-        if path.name == "positive_fill.json":
+        if path.name in FILL_RESULTS:
             continue
         if needle in path.read_bytes():
             hits.append(str(path.relative_to(state)))
@@ -658,7 +1097,9 @@ def _measurements(
     elapsed = max(time.time() - started, 0.001)
     run_id = "cah-fill-" + transport
     denials = sum(
-        1 for case in cases if case["actual"] != "ok" and case["expect"] != "present"
+        1
+        for case in cases
+        if case["expect"] not in {"ok", "present"} and case["actual"] == case["expect"]
     )
     positive = json.loads(
         (state / "results" / "positive_fill.json").read_text(encoding="utf-8")
@@ -698,7 +1139,7 @@ def _measurements(
             aggregation_basis="wall time of the successful completefill rpc",
             protected_attribution_ref="fill-v1",
             missing_reason=None,
-            time_basis="utc_real",
+            time_basis="monotonic_real",
             interval_start=interval_start,
             observation_ref=f"run:{run_id}:fill",
         ),
@@ -720,7 +1161,7 @@ def _measurements(
             broker_pid,
             _rss_bytes,
         ),
-        _tls_record(schema, run_id, elapsed, interval_start, transport, positive),
+        _tls_record(schema, run_id, elapsed, interval_start, transport),
         _identity_record(schema, run_id, elapsed, interval_start, transport, material),
         measurement(
             schema,
@@ -804,51 +1245,33 @@ def _tls_record(
     schema: Dict[str, Any],
     run_id: str,
     elapsed: float,
-    interval_start: str,
+    _interval_start: str,
     transport: str,
-    positive: Dict[str, Any],
 ) -> Dict[str, Any]:
-    if transport != "mtls":
-        return measurement(
-            schema,
-            run_id=run_id,
-            metric_id="tls_handshake_seconds",
-            measurement_scope="component",
-            role="credential-broker",
-            origin="unavailable",
-            privacy="approved_aggregate",
-            interval_seconds=elapsed,
-            value=None,
-            sample_count=0,
-            counter_reset=False,
-            aggregation_basis="unix peercred path does not handshake tls",
-            protected_attribution_ref=None,
-            missing_reason="unix peercred path does not perform a tls handshake",
-            time_basis="utc_real",
-            interval_start=None,
-            observation_ref=None,
-        )
+    if transport == "mtls":
+        basis = "lab mtls is enabled but the handshake is not timed separately"
+        reason = "a tls handshake timer is not measured on this lab path"
+    else:
+        basis = "unix peercred path does not handshake tls"
+        reason = "unix peercred path does not perform a tls handshake"
     return measurement(
         schema,
         run_id=run_id,
         metric_id="tls_handshake_seconds",
         measurement_scope="component",
         role="credential-broker",
-        origin="estimated",
-        privacy="protected_detail",
+        origin="unavailable",
+        privacy="approved_aggregate",
         interval_seconds=elapsed,
-        value=float(positive["seconds"]),
-        sample_count=1,
+        value=None,
+        sample_count=0,
         counter_reset=False,
-        aggregation_basis=(
-            "upper bound from the fill rpc through the byte-forwarder; "
-            "includes the handshake and the grant check"
-        ),
-        protected_attribution_ref="fill-v1",
-        missing_reason=None,
+        aggregation_basis=basis,
+        protected_attribution_ref=None,
+        missing_reason=reason,
         time_basis="utc_real",
-        interval_start=interval_start,
-        observation_ref=f"run:{run_id}:tls",
+        interval_start=None,
+        observation_ref=None,
     )
 
 

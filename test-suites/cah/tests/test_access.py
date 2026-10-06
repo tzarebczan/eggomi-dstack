@@ -13,6 +13,10 @@ from pathlib import Path
 from cah.access import load_access
 from cah.demo import CLIENTS, SERVERS
 
+WS1_ACCESS = (
+    Path(__file__).resolve().parents[1] / "contracts" / "ws1" / "service-access.json"
+)
+
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "profiles" / "eggomi"
 PROFILE = PROFILE_DIR / "service-access.json"
 
@@ -50,6 +54,31 @@ class AccessTests(unittest.TestCase):
             (role, instance, boot) for role, instance, boot in SERVERS + CLIENTS
         }
         self.assertEqual(from_file, from_demo)
+
+    def test_allow_edges_map_onto_ws1(self) -> None:
+        """Every runtime edge is mapped, and real WS1 edges exist in the pin."""
+        access = json.loads(PROFILE.read_text(encoding="utf-8"))
+        mapping = json.loads(
+            (PROFILE_DIR / "service-access-map.json").read_text(encoding="utf-8")
+        )
+        mapped = {
+            (edge["caller_role"], edge["callee"], edge["method"])
+            for edge in mapping["edges"]
+        }
+        for edge in access["allow"]:
+            key = (edge["caller_role"], edge["callee"], edge["method"])
+            self.assertIn(key, mapped)
+        ws1 = json.loads(WS1_ACCESS.read_text(encoding="utf-8"))
+        ws1_edges = {
+            (edge["caller"], edge["callee"], edge["method"])
+            for edge in ws1["allowed_edges"]
+        }
+        for edge in mapping["edges"]:
+            if edge["ws1_method"] is None:
+                self.assertTrue(edge["deviation"])
+                continue
+            triple = (edge["ws1_caller"], edge["ws1_callee"], edge["ws1_method"])
+            self.assertIn(triple, ws1_edges)
 
 
 if __name__ == "__main__":

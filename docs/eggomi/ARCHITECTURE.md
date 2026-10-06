@@ -117,13 +117,14 @@ volume.
 ### Keeper
 
 The keeper subVM owns the password store, Matrix bridge connections,
-persistent sockets, and other state that survives browser restarts. It exposes
-a narrow, audited, rate-limited capability API such as `get_secret`,
-`mint_session_token`, and `list_connections`.
+persistent sockets, and other state that survives browser restarts.
 
-Keeper snapshots need a separate policy. Either exclude its secret store from
-routine checkpoints or encrypt checkpoint blobs with a key that never leaves
-keeper.
+Superseded for this stack: a live keeper API of `get_secret`,
+`mint_session_token`, and `list_connections`, and branching that live keeper
+by checkpoint as ordinary scaling. WS1 forbids both. The authority model that
+this branch runs is [docs/cah/authority-model.md](../cah/authority-model.md):
+keeper admits a use from its own policy, and a use-grant is single-use and
+journaled.
 
 ### Future agent loop
 
@@ -190,6 +191,6 @@ not implied by S0/S1 passing.
 ## Open decisions
 
 - Nested-virtualization availability on target CI and cloud hosts.
-- Whether keeper participates in smolvm checkpointing.
+- Keeper checkpoint-as-scaling is closed for this stack. A live keeper is not branched by checkpoint. See [docs/cah/authority-model.md](../cah/authority-model.md).
 - Whether Matrix bridges run in keeper or a dedicated subVM.
 - CPU-only SNP rollout before any GPU-TEE work.
