@@ -5,8 +5,9 @@ Answers for the keeper, 2026-10-06. Asks 2–8 are on
 PR #1. This note does not merge either pull request.
 
 Asks 2–8 are commit `b10847b9bcf7f252021a054575b5e06cf003e8d3`.
-The freeze pin is the tip of PR #2, which is this note plus that commit.
-`revoked_boot` is not a wire code on either commit.
+The S1–S7 note is `00055b3f7029765227a9d5daad6b28eaac4de268`.
+Pin the tip of PR #2. This Freeze section is the only change after that note.
+`revoked_boot` is not a wire code on these commits.
 
 ## S1
 
