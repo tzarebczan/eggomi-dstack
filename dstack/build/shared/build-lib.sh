@@ -132,6 +132,11 @@ docker_build() {
         --build-arg "DSTACK_REV=$GIT_REV"
         --build-arg "DSTACK_SRC_URL=$DSTACK_SRC_URL"
     )
+    # Private mirrors cannot clone anonymously. The token stays a BuildKit
+    # secret: it is not a build-arg, so it cannot land in image history.
+    if [ -n "${DSTACK_CLONE_TOKEN:-}" ]; then
+        args+=(--secret "id=github_token,env=DSTACK_CLONE_TOKEN")
+    fi
 
     local tag
     while IFS= read -r tag; do

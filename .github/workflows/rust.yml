@@ -52,7 +52,28 @@ jobs:
           echo "nothing this job covers changed"
         fi
 
+    # ubuntu-latest fills its root disk during this workspace test build.
+    # The last run died with ENOSPC (exit 101) while linking, after clippy
+    # and rustfmt had already passed. Drop SDKs this job does not use.
+    - name: Free runner disk space
+      if: steps.changes.outputs.relevant == 'true'
+      run: |
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /usr/local/lib/android \
+          /opt/ghc \
+          /opt/hostedtoolcache/CodeQL \
+          /usr/local/share/boost \
+          /usr/share/swift \
+          /usr/local/julia \
+          /usr/share/miniconda \
+          /usr/local/share/chromium \
+          /opt/microsoft
+        sudo apt-get clean
+        df -h /
+
     - name: Install Rust
+      if: steps.changes.outputs.relevant == 'true'
       uses: dtolnay/rust-toolchain@1.92.0
       with:
         components: clippy, rustfmt

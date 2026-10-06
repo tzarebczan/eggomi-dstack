@@ -32,6 +32,7 @@ Optional environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `GIT_REV` | Revision to build (default `HEAD`) |
+| `DSTACK_CLONE_TOKEN` | Token for a private `DSTACK_SRC_URL`. Passed as a BuildKit secret, not a build-arg. |
 | `IMAGE_VERSION` | Version recorded in the image metadata (default `dev`) |
 | `IMAGE_SOURCE_URL` | Repository URL recorded in the image metadata |
 | `NO_CACHE` | Set to any value to build without the layer cache |
