@@ -25,12 +25,19 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, FrozenSet, Iterator, List, Optional, Tuple
 
-from .launcher import KeyOwners, LauncherSigner, launcher_dir, row_attributed
+from .launcher import (
+    KeyOwners,
+    LauncherSigner,
+    fsync_dir,
+    launcher_dir,
+    row_attributed,
+)
 
 
 class BootRollback(ValueError):
@@ -77,14 +84,19 @@ class AdmissionRegistry:
     trust_domain: str
     tenant: str
     workloads: List[Dict[str, object]]
+    source: Optional[str] = None
 
     def attributed(self) -> List[Dict[str, object]]:
         """Return the rows whose ``launcher_sig`` verifies.
 
-        Lookups only see these rows. An instance, channel key or
-        fingerprint that two attributed rows claim is no identity for
-        either, as in Eggomi's ``readRegistry``. The raw ``workloads`` list
-        is the launcher's own view, used when it rewrites the file.
+        Lookups only see these rows. An instance, channel key, fingerprint
+        or pid with start time that two attributed rows claim is no
+        identity for either, as in Eggomi's ``readRegistry``. A row whose
+        generation is below one this process already saw for the instance,
+        or whose boot id the instance already left, is no identity either
+        (``_floors``), so replaying an older signed row does not bring an
+        old incarnation back. The raw ``workloads`` list is the launcher's
+        own view, used when it rewrites the file.
         """
         rows = [
             row
@@ -96,7 +108,10 @@ class AdmissionRegistry:
         for row in rows:
             for claim in _claims(row):
                 counts[claim] = counts.get(claim, 0) + 1
-        return [row for row in rows if all(counts[c] == 1 for c in _claims(row))]
+        unique = [row for row in rows if all(counts[c] == 1 for c in _claims(row))]
+        if self.source is None:
+            return unique
+        return [row for row in unique if _floors.admit(self.source, row)]
 
     def find_pid(self, pid: int) -> Optional[WorkloadIdentity]:
         """Return the workload bound to this pid and its current start time.
@@ -189,7 +204,9 @@ def load_registry(path: Path) -> AdmissionRegistry:
         return AdmissionRegistry(
             trust_domain="lab.cah", tenant="tenant-lab-1", workloads=[]
         )
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    with _write_lock(path, fcntl.LOCK_SH):
+        text = path.read_text(encoding="utf-8")
+    raw = json.loads(text)
     if raw.get("schema_version") != "admission-registry/v1":
         raise ValueError("admission registry schema is not admission-registry/v1")
     workloads = raw.get("workloads")
@@ -199,7 +216,71 @@ def load_registry(path: Path) -> AdmissionRegistry:
         trust_domain=str(raw["trust_domain"]),
         tenant=str(raw["tenant"]),
         workloads=workloads,
+        source=str(path.resolve()),
     )
+
+
+class RegistryTampered(ValueError):
+    """The file holds a row the launcher did not sign. It refuses to rewrite it."""
+
+
+def load_for_launcher(path: Path, signer: LauncherSigner) -> AdmissionRegistry:
+    """Load the registry for a launcher write.
+
+    Every row must verify under ``signer`` and name a distinct instance.
+    Otherwise the launcher would re-sign a row someone else put in the
+    file, so the write is refused with ``RegistryTampered``.
+    """
+    registry = load_registry(path)
+    seen: set[object] = set()
+    for row in registry.workloads:
+        if not isinstance(row, dict) or not row_attributed(
+            registry.trust_domain, registry.tenant, row, keys=[signer.public]
+        ):
+            raise RegistryTampered("registry holds a row the launcher did not sign")
+        if row.get("instance_id") in seen:
+            raise RegistryTampered("registry holds two rows for one instance")
+        seen.add(row.get("instance_id"))
+    return registry
+
+
+class _Floors:
+    """What this process saw of each instance: generations only move forward.
+
+    Kept in memory per registry file, like Eggomi's ``Watermarks``. A
+    restarted reader starts empty.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: Dict[Tuple[str, str], Tuple[int, str, FrozenSet[str]]] = {}
+
+    def admit(self, source: str, row: Dict[str, object]) -> bool:
+        key = (source, str(row.get("instance_id")))
+        generation = _generation(row.get("boot_generation"))
+        boot_id = str(row.get("boot_id"))
+        history = row.get("boot_history")
+        left = (
+            {str(b) for b in history if b != boot_id}
+            if isinstance(history, list)
+            else set()
+        )
+        with self._lock:
+            seen = self._seen.get(key)
+            if seen is not None:
+                floor, floor_boot, floor_left = seen
+                if generation < floor:
+                    return False
+                if boot_id != floor_boot and boot_id in floor_left:
+                    return False
+                left |= floor_left
+                if boot_id != floor_boot:
+                    left.add(floor_boot)
+            self._seen[key] = (generation, boot_id, frozenset(left))
+            return True
+
+
+_floors = _Floors()
 
 
 def bind_process(
@@ -366,9 +447,10 @@ def save_registry(
 
 def _mutate(path: Path, fn: object) -> object:
     with _lock(path):
-        registry = load_registry(path)
+        signer = LauncherSigner.at(launcher_dir(path))
+        registry = load_for_launcher(path, signer)
         result = fn(registry)  # type: ignore[operator]
-        save_registry(path, registry)
+        save_registry(path, registry, signer=signer)
         return result
 
 
@@ -386,10 +468,52 @@ def _lock(path: Path) -> Iterator[None]:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    """Write the registry so readers never see a torn file.
+
+    The first write renames a new file into place. Later writes rewrite the
+    same inode under the write lock that readers share. Confined processes
+    see the registry through a read-only bind mount of that inode, and a
+    rename over the path would detach that mount in their namespace and
+    leave the new file writable to them.
+    """
+    data = text.encode("utf-8")
+    if not path.exists():
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        fsync_dir(path.parent)
+        return
+    with _write_lock(path, fcntl.LOCK_EX):
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            view = memoryview(data)
+            offset = 0
+            while offset < len(data):
+                offset += os.pwrite(fd, view[offset:], offset)
+            os.ftruncate(fd, len(data))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+@contextmanager
+def _write_lock(path: Path, mode: int) -> Iterator[None]:
+    """Hold the registry write lock: exclusive to write, shared to read."""
+    lock_path = path.with_name(path.name + ".wlock")
+    if mode == fcntl.LOCK_EX:
+        fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o644)
+    else:
+        try:
+            fd = os.open(lock_path, os.O_RDONLY)
+        except FileNotFoundError:
+            yield
+            return
+    try:
+        fcntl.flock(fd, mode)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
@@ -417,6 +541,9 @@ def _advance_changed_channels(path: Path, registry: AdmissionRegistry) -> None:
 
 def _claims(row: Dict[str, object]) -> List[str]:
     claims = [f"in:{row.get('instance_id')}"]
+    pid = row.get("pid")
+    if pid is not None:
+        claims.append(f"pr:{pid}/{row.get('starttime')}")
     channel = row.get("channel_public")
     if isinstance(channel, str) and channel:
         claims.append(f"ch:{channel}")

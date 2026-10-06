@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .grants import GrantStore, host_fence_paths
-from .registry import load_registry, save_registry
+from .launcher import LauncherSigner, launcher_dir
+from .registry import RegistryTampered, load_for_launcher, save_registry
 from .rpc import rpc_error, rpc_ok
 
 
@@ -64,8 +65,12 @@ def admit_scoped(
         or admit_boot != scope.get("admit_boot_id")
     ):
         return rpc_error("denied_bootstrap")
-    registry = load_registry(registry_path)
-    if registry.find_instance(admit_instance) is not None:
+    signer = LauncherSigner.at(launcher_dir(registry_path))
+    try:
+        registry = load_for_launcher(registry_path, signer)
+    except RegistryTampered:
+        return rpc_error("denied_bootstrap")
+    if any(row.get("instance_id") == admit_instance for row in registry.workloads):
         return rpc_error("denied_bootstrap")
     registry.workloads.append(
         {
@@ -80,7 +85,7 @@ def admit_scoped(
             "channel_public": None,
         }
     )
-    save_registry(registry_path, registry)
+    save_registry(registry_path, registry, signer=signer)
     scope["used"] = True
     tmp = scope_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(scope, indent=2, sort_keys=True) + "\n", encoding="utf-8")

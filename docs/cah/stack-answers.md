@@ -16,7 +16,7 @@ The stack asks from those decisions land in one PR after `56cd7653`.
 | Refuse a key already bound elsewhere | Done. First owner (instance and role) wins, even after its row is gone. Memory is `state/launcher/key-owners.jsonl`, fsynced, outside `authority/` and the registry. |
 | Lab channel moves to Noise KK | Done. `Noise_KK_25519_ChaChaPoly_SHA256`, prologue `eggomi/cah-channel/v1`, Eggomi's framing and keeper.sock JSON. `cah-channel/v1` is gone. The keeper rechecks the row before every call. `cah/noise.py` passes the official KK vectors. |
 | Interop proof | Done. `vectors/eggomi-interop.json` comes from Eggomi's `channel.ts`, `registry.ts` and `packages/noise`; `tests/test_interop.py` reproduces it in Python in CI. `scripts/eggomi-interop.sh <eggomi-repo>` also runs Eggomi's TypeScript against the stack over sockets. |
-| CI job | Done. `.github/workflows/cah-tests.yml` on `ubuntu-24.04`. It fails before the tests when the kernel is older than 6.5, `SO_PEERPIDFD` is missing, or user and mount namespaces do not work. Nothing is skipped. |
+| CI job | Done. `.github/workflows/cah-tests.yml` on `ubuntu-24.04`. It fails before the tests when the kernel is older than 6.5, `SO_PEERPIDFD` is missing, or user and mount namespaces do not work. No pidfd or namespace test is skipped. CI has no Eggomi checkout, so the four live interop tests are skipped there by name; the committed Eggomi vectors run. |
 
 ## Keeper-gap pass after the merge
 

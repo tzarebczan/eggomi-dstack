@@ -12,14 +12,17 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
+from unittest import mock
 
 from cah.auth import authenticate_unix
 from cah.launcher import (
     KEY_OWNERS,
     KeyAlreadyBound,
+    KeyOwners,
     LauncherSigner,
     RowNotSignable,
     js_json,
@@ -29,6 +32,7 @@ from cah.launcher import (
 )
 from cah.registry import (
     AdmissionRegistry,
+    RegistryTampered,
     bind_process,
     load_registry,
     rebind_channel,
@@ -39,7 +43,7 @@ TD = "lab.cah"
 TENANT = "tenant-lab-1"
 
 
-def _row(instance: str = "browser-1", channel: str = "ab" * 32) -> Dict[str, Any]:
+def _row(instance: str = "browser-1", channel: str = "1b" * 32) -> Dict[str, Any]:
     return {
         "role": "browser-guard",
         "instance_id": instance,
@@ -77,7 +81,7 @@ class RowMessageTests(unittest.TestCase):
         expect = (
             'eggomi/admission-row/v1\n["lab.cah","tenant-lab-1","browser-guard",'
             '"browser-1","boot-browser-1",1,["boot-browser-1"],"'
-            + "ab" * 32
+            + "1b" * 32
             + '","fp-1",4242,99]'
         ).encode("utf-8")
         self.assertEqual(message, expect)
@@ -113,7 +117,7 @@ class SignedRegistryTests(unittest.TestCase):
         """The launcher key lives beside the registry, outside authority/."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "admission.json"
-            _save(path, [_row("browser-1"), _row("browser-2", "cd" * 32)])
+            _save(path, [_row("browser-1"), _row("browser-2", "2d" * 32)])
             raw = json.loads(path.read_text(encoding="utf-8"))
             key = launcher_dir(path) / "row-signing.key"
             self.assertEqual(key.stat().st_mode & 0o777, 0o600)
@@ -146,7 +150,7 @@ class SignedRegistryTests(unittest.TestCase):
             bind_process(path, "browser-1", os.getpid())
             registry = load_registry(path)
             self.assertIsNotNone(registry.find_instance("browser-1"))
-            self.assertIsNotNone(registry.find_channel("ab" * 32))
+            self.assertIsNotNone(registry.find_channel("1b" * 32))
             self.assertIsNotNone(registry.find_pid(os.getpid()))
 
             def strip(rows: List[Dict[str, Any]]) -> None:
@@ -155,7 +159,7 @@ class SignedRegistryTests(unittest.TestCase):
             _rewrite(path, strip)
             registry = load_registry(path)
             self.assertIsNone(registry.find_instance("browser-1"))
-            self.assertIsNone(registry.find_channel("ab" * 32))
+            self.assertIsNone(registry.find_channel("1b" * 32))
             self.assertIsNone(registry.find_pid(os.getpid()))
 
     def test_edited_row_is_no_identity(self) -> None:
@@ -165,11 +169,11 @@ class SignedRegistryTests(unittest.TestCase):
             _save(path, [_row()])
 
             def swap(rows: List[Dict[str, Any]]) -> None:
-                rows[0]["channel_public"] = "ef" * 32
+                rows[0]["channel_public"] = "3f" * 32
 
             _rewrite(path, swap)
             registry = load_registry(path)
-            self.assertIsNone(registry.find_channel("ef" * 32))
+            self.assertIsNone(registry.find_channel("3f" * 32))
             self.assertIsNone(registry.find_instance("browser-1"))
 
     def test_row_signed_by_another_key_is_no_identity(self) -> None:
@@ -251,7 +255,7 @@ class KeyOwnerTests(unittest.TestCase):
                 _save(path, [_row("clone-1")])
             self.assertFalse(path.exists())
             journal = launcher_dir(path) / KEY_OWNERS
-            self.assertIn("ch:" + "ab" * 32, journal.read_text(encoding="utf-8"))
+            self.assertIn("ch:" + "1b" * 32, journal.read_text(encoding="utf-8"))
             self.assertNotIn("authority", str(journal.relative_to(tmp)))
 
     def test_same_instance_with_another_role_is_refused(self) -> None:
@@ -270,7 +274,7 @@ class KeyOwnerTests(unittest.TestCase):
             path = Path(tmp) / "admission.json"
             first = _row("browser-1")
             first["cert_fingerprint"] = "fp-one"
-            _save(path, [first, _row("browser-2", "cd" * 32)])
+            _save(path, [first, _row("browser-2", "2d" * 32)])
             with self.assertRaises(KeyAlreadyBound):
                 bind_process(path, "browser-2", None, fingerprint="fp-one")
             identity = load_registry(path).find_instance("browser-2")
@@ -281,16 +285,16 @@ class KeyOwnerTests(unittest.TestCase):
         """An instance may return to its own key but not take another's."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "admission.json"
-            _save(path, [_row("browser-1"), _row("browser-2", "cd" * 32)])
+            _save(path, [_row("browser-1"), _row("browser-2", "2d" * 32)])
             with self.assertRaises(KeyAlreadyBound):
-                rebind_channel(path, "browser-2", "ab" * 32)
-            rebind_channel(path, "browser-1", "ef" * 32)
-            back = rebind_channel(path, "browser-1", "ab" * 32)
+                rebind_channel(path, "browser-2", "1b" * 32)
+            rebind_channel(path, "browser-1", "3f" * 32)
+            back = rebind_channel(path, "browser-1", "1b" * 32)
             self.assertEqual(back.kind, "rebound")
             self.assertEqual(back.boot_generation, 3)
             identity = load_registry(path).find_instance("browser-2")
             assert identity is not None
-            self.assertEqual(identity.channel_public, "cd" * 32)
+            self.assertEqual(identity.channel_public, "2d" * 32)
 
     def test_memory_survives_a_new_process(self) -> None:
         """The owner journal is read from disk on every save."""
@@ -304,7 +308,7 @@ class KeyOwnerTests(unittest.TestCase):
                 "from cah.registry import AdmissionRegistry, save_registry\n"
                 "row={'role':'browser-guard','instance_id':'clone-1',"
                 "'boot_id':'b','boot_generation':1,'boot_history':['b'],"
-                "'channel_public':'ab'*32}\n"
+                "'channel_public':'1b'*32}\n"
                 "try:\n"
                 " save_registry(Path(sys.argv[1]), AdmissionRegistry("
                 "trust_domain='lab.cah', tenant='t', workloads=[row]))\n"
@@ -324,7 +328,7 @@ class KeyOwnerTests(unittest.TestCase):
             path = Path(tmp) / "admission.json"
             _save(path, [_row("browser-1")])
             old = json.loads(path.read_text(encoding="utf-8"))["workloads"][0]
-            rebind_channel(path, "browser-1", "ef" * 32)
+            rebind_channel(path, "browser-1", "3f" * 32)
             self.assertIsNotNone(load_registry(path).find_instance("browser-1"))
 
             def splice(rows: List[Dict[str, Any]]) -> None:
@@ -333,7 +337,103 @@ class KeyOwnerTests(unittest.TestCase):
             _rewrite(path, splice)
             registry = load_registry(path)
             self.assertIsNone(registry.find_instance("browser-1"))
-            self.assertIsNone(registry.find_channel("ab" * 32))
+            self.assertIsNone(registry.find_channel("1b" * 32))
+
+
+class ReviewFindingTests(unittest.TestCase):
+    """Aliases, injected rows, replays, shared processes and torn writes."""
+
+    def test_key_aliases_are_not_signed(self) -> None:
+        """A trailing newline or a set top bit is another spelling of a key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            high_bit = "1b" * 31 + "9b"
+            for alias in ("1b" * 32 + "\n", high_bit, "ff" * 31 + "7f"):
+                with self.subTest(alias=alias):
+                    with self.assertRaises(RowNotSignable):
+                        _save(path, [_row("browser-1"), _row("clone-1", alias)])
+
+    def test_launcher_does_not_re_sign_an_injected_row(self) -> None:
+        """A bind on another instance refuses a file holding an unsigned row."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            injected = _row("keeper-x", "4c" * 32)
+            injected["role"] = "keeper-core"
+
+            def inject(rows: List[Dict[str, Any]]) -> None:
+                rows.append(injected)
+
+            _rewrite(path, inject)
+            before = path.read_bytes()
+            with self.assertRaises(RegistryTampered):
+                bind_process(path, "browser-1", os.getpid())
+            self.assertEqual(path.read_bytes(), before)
+            self.assertIsNone(load_registry(path).find_instance("keeper-x"))
+
+    def test_replayed_older_row_is_no_identity(self) -> None:
+        """Once generation 2 was read, the signed generation 1 row is refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1")])
+            old = path.read_bytes()
+            self.assertIsNotNone(load_registry(path).find_instance("browser-1"))
+            rebind_channel(path, "browser-1", "3f" * 32)
+            newer = load_registry(path).find_instance("browser-1")
+            assert newer is not None
+            self.assertEqual(newer.boot_generation, 2)
+            path.write_bytes(old)
+            self.assertIsNone(load_registry(path).find_instance("browser-1"))
+            self.assertIsNone(load_registry(path).find_channel("1b" * 32))
+
+    def test_one_process_in_two_rows_is_no_identity(self) -> None:
+        """Two signed rows that bind the same pid and start time."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.json"
+            _save(path, [_row("browser-1"), _row("browser-2", "2d" * 32)])
+            bind_process(path, "browser-1", os.getpid())
+            bind_process(path, "browser-2", os.getpid())
+            registry = load_registry(path)
+            self.assertIsNone(registry.find_pid(os.getpid()))
+            self.assertIsNone(registry.find_instance("browser-1"))
+
+    def test_short_writes_are_completed(self) -> None:
+        """The owner journal line is whole even when os.write is short."""
+        with tempfile.TemporaryDirectory() as tmp:
+            owners = KeyOwners(Path(tmp) / "launcher")
+            real_write = os.write
+
+            def one_byte(fd: int, data: Any) -> int:
+                return real_write(fd, bytes(data[:1]))
+
+            with mock.patch("cah.launcher.os.write", side_effect=one_byte):
+                owners.claim([_row("browser-1")])
+            self.assertEqual(
+                owners.owners(), {"ch:" + "1b" * 32: '["browser-1","browser-guard"]'}
+            )
+
+    def test_concurrent_key_creation_publishes_one_key(self) -> None:
+        """Racing launchers all load the key that was linked first."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "launcher"
+            publics: List[bytes] = []
+            barrier = threading.Barrier(8)
+
+            def load() -> None:
+                barrier.wait()
+                publics.append(LauncherSigner.at(directory).public)
+
+            threads = [threading.Thread(target=load) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertEqual(len(set(publics)), 1)
+            self.assertEqual(LauncherSigner.at(directory).public, publics[0])
+            self.assertEqual(
+                sorted(p.name for p in directory.iterdir()), ["row-signing.key"]
+            )
 
 
 if __name__ == "__main__":

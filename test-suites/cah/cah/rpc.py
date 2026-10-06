@@ -16,6 +16,7 @@ import os
 import socket
 import ssl
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -302,13 +303,19 @@ def _exchange_unix(
 
 
 def _recheck(registry_path: Path, identity: WorkloadIdentity) -> Optional[str]:
-    """Return the refusal when the peer is no longer the admitted incarnation."""
-    if identity.pid is None:
-        return "denied_unadmitted"
-    now = load_registry(registry_path).find_pid(identity.pid)
+    """Return the refusal when the peer is no longer the admitted incarnation.
+
+    The row is found by instance. A row that is gone (or no longer signed) is
+    ``denied_unadmitted``. Any change, including a move to another pid, is
+    ``denied_boot``. The same pid with a new start time is a new process.
+    """
+    registry = load_registry(registry_path)
+    now = registry.find_instance(identity.instance_id)
     if now is None:
         return "denied_unadmitted"
     if now != identity:
+        return "denied_boot"
+    if identity.pid is None or registry.find_pid(identity.pid) != identity:
         return "denied_boot"
     return None
 
@@ -362,12 +369,28 @@ def _finish(sock: socket.socket) -> None:
     _drain(sock)
 
 
+_DRAIN_SECONDS = 1.0
+_DRAIN_BYTES = 64 * 1024
+
+
 def _drain(sock: socket.socket) -> None:
-    """Read leftover client bytes so a gate denial is not a reset."""
+    """Read leftover client bytes so a refusal is not a reset.
+
+    At most one second and 64 KiB in total, so a peer that keeps sending
+    cannot hold the connection open.
+    """
+    deadline = time.monotonic() + _DRAIN_SECONDS
+    received = 0
     try:
-        sock.settimeout(1)
-        while sock.recv(4096):
-            continue
+        while received < _DRAIN_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            sock.settimeout(remaining)
+            part = sock.recv(4096)
+            if not part:
+                return
+            received += len(part)
     except (TimeoutError, OSError):
         return
 

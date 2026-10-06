@@ -206,8 +206,8 @@ class RegistryTests(unittest.TestCase):
             grants_path = root / "grants.json"
             journal_path = root / "authority-journal.jsonl"
             epoch_path = root / "keeper-epoch"
-            key_a = "aa" * 32
-            key_b = "bb" * 32
+            key_a = "1a" * 32
+            key_b = "2b" * 32
             save_registry(
                 path,
                 AdmissionRegistry(

@@ -35,6 +35,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -56,8 +57,9 @@ ROW_DOMAIN = "eggomi/admission-row/v1\n"
 LAUNCHER_DIR = "launcher"
 SIGNING_KEY = "row-signing.key"
 KEY_OWNERS = "key-owners.jsonl"
-_HEX32 = re.compile(r"^[0-9a-f]{64}$")
-_SIG = re.compile(r"^[0-9a-f]{128}$")
+_HEX32 = re.compile(r"[0-9a-f]{64}")
+_SIG = re.compile(r"[0-9a-f]{128}")
+_P25519 = 2**255 - 19
 _SURROGATE = re.compile("[\ud800-\udfff]")
 _MAX_SAFE = 2**53 - 1
 
@@ -152,8 +154,10 @@ def require_signable(trust_domain: str, tenant: str, row: Mapping[str, Any]) -> 
     ):
         raise RowNotSignable("boot_history must be unique and end in boot_id")
     channel = row.get("channel_public")
-    if channel is not None and not (isinstance(channel, str) and _HEX32.match(channel)):
-        raise RowNotSignable("channel_public must be 64 lowercase hex characters")
+    if channel is not None and not canonical_x25519(channel):
+        raise RowNotSignable(
+            "channel_public must be a canonical X25519 key in 64 lowercase hex"
+        )
     fingerprint = row.get("cert_fingerprint")
     if fingerprint is not None and not _nonempty(fingerprint):
         raise RowNotSignable("cert_fingerprint must be a non-empty string")
@@ -165,6 +169,20 @@ def require_signable(trust_domain: str, tenant: str, row: Mapping[str, Any]) -> 
         raise RowNotSignable("starttime must be a non-negative integer")
     if (pid is None) != (starttime is None):
         raise RowNotSignable("pid and starttime must both be set or both be null")
+
+
+def canonical_x25519(value: object) -> bool:
+    """Return whether ``value`` is one X25519 public key in exactly one spelling.
+
+    Exactly 64 lowercase hex characters (no trailing newline or spaces), the
+    top bit clear and the u-coordinate below 2**255 - 19. RFC 7748 masks the
+    top bit and reduces mod p, so any other spelling is an alias of a key
+    that the first-owner memory would otherwise count as a different key.
+    """
+    if not isinstance(value, str) or not _HEX32.fullmatch(value):
+        return False
+    raw = bytes.fromhex(value)
+    return raw[31] & 0x80 == 0 and int.from_bytes(raw, "little") < _P25519
 
 
 class LauncherSigner:
@@ -183,17 +201,19 @@ class LauncherSigner:
 
         The launcher process that loads it trusts it.
         """
-        directory.mkdir(parents=True, exist_ok=True)
-        os.chmod(directory, 0o700)
+        make_durable_dir(directory)
         path = directory / SIGNING_KEY
         if not path.exists():
             seed = Ed25519PrivateKey.generate().private_bytes(
                 Encoding.Raw, PrivateFormat.Raw, NoEncryption()
             )
-            tmp = path.with_name(path.name + ".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # A private temporary name per caller, then link(): two launchers
+            # racing to create the key never write through one inode, and
+            # only the first link publishes.
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(8)}")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                os.write(fd, seed)
+                _write_all(fd, seed)
                 os.fsync(fd)
             finally:
                 os.close(fd)
@@ -288,9 +308,11 @@ class KeyOwners:
         created = not self.path.exists()
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            for key, owner in fresh.items():
-                line = json.dumps({"key": key, "owner": owner}, sort_keys=True) + "\n"
-                os.write(fd, line.encode("utf-8"))
+            lines = "".join(
+                json.dumps({"key": key, "owner": owner}, sort_keys=True) + "\n"
+                for key, owner in fresh.items()
+            )
+            _write_all(fd, lines.encode("utf-8"))
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -299,8 +321,7 @@ class KeyOwners:
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)
+        make_durable_dir(self.path.parent)
         handle = self.path.with_name(self.path.name + ".lock").open("a")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -327,7 +348,7 @@ def trusted_launcher_keys() -> Sequence[bytes]:
 
 def parse_public(value: str) -> bytes:
     """Decode a ``--launcher-public`` value (64 hex characters)."""
-    if not isinstance(value, str) or not _HEX32.match(value.lower()):
+    if not isinstance(value, str) or not _HEX32.fullmatch(value.lower()):
         raise ValueError("launcher public key must be 64 hex characters")
     return bytes.fromhex(value)
 
@@ -344,7 +365,7 @@ def row_attributed(
     this process does not trust is not attributed.
     """
     sig = row.get("launcher_sig")
-    if not isinstance(sig, str) or not _SIG.match(sig):
+    if not isinstance(sig, str) or not _SIG.fullmatch(sig):
         return False
     try:
         require_signable(trust_domain, tenant, row)
@@ -359,6 +380,24 @@ def row_attributed(
         except InvalidSignature:
             continue
     return False
+
+
+def make_durable_dir(directory: Path) -> None:
+    """Create ``directory`` (mode 0700) and make its entry in the parent durable."""
+    if not directory.is_dir():
+        directory.mkdir(parents=True, exist_ok=True)
+        fsync_dir(directory.parent)
+    os.chmod(directory, 0o700)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of ``data``. A short write is retried, not ignored."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("write made no progress")
+        view = view[written:]
 
 
 def fsync_dir(directory: Path) -> None:

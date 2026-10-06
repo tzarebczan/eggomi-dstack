@@ -60,7 +60,18 @@ lookup only returns rows whose signature verifies, so an unsigned, edited or
 foreign-signed row is no identity: the pidfd gate refuses its peer with
 `denied_unadmitted`, and resolve does not find it as a recipient. An
 instance, channel key or fingerprint that two signed rows claim is no
-identity for either.
+identity for either. A reader also remembers, per registry file and in
+memory, the highest generation and the boot ids each instance left. A
+signed row older than one it already read is no identity, so writing an
+earlier signed registry back does not revive an old incarnation for a
+reader that saw the newer one. A restarted reader starts empty. That is the
+same scope as Eggomi's in-memory `Watermarks`.
+
+The launcher only rewrites a file whose every row it signed. A row someone
+else put in the registry makes the next launcher write fail
+(`RegistryTampered`) instead of being signed with the rest. A channel key
+must be canonical (64 lowercase hex, top bit clear, below 2^255 - 19), so
+no other spelling of one X25519 key can be bound to a second owner.
 
 The launcher also refuses to sign a row whose channel key or certificate
 fingerprint was ever signed for another instance or role. The first owner
@@ -150,8 +161,9 @@ big-endian length (1 to 65 535) and that many bytes. The workload sends
 `{"id","method","params"}` in, `{"id","result"}` or
 `{"id","error":{"code","message"}}` out.
 
-The keeper re-reads the peer's row before every call. A row that is gone is
-`denied_unadmitted`, a row whose incarnation changed is `denied_boot`, and
+The keeper re-reads the peer's row, by instance, before every call. A row
+that is gone is `denied_unadmitted`, a row whose incarnation changed
+(including a move to another pid) is `denied_boot`, and
 that refusal is the last frame before FIN. A frame that does not decrypt,
 a zero length, or a malformed request closes the connection without a
 reply. `SO_PEERPIDFD` (no `SO_PEERCRED` fallback) and a live pidfd still
@@ -163,7 +175,10 @@ key cannot finish message 1.
 Non-keeper processes run in a user and mount namespace that hides
 `state/authority`, `state/launcher` and other role directories, then bind-mounts only that
 process's role material. `admission.json` is remounted read-only in that
-namespace. Keeper stays unconfined because it owns the policy, the lab CA
+namespace. After the first write the launcher rewrites the registry in
+place under a write lock that readers share. A rename over the path would
+detach the read-only bind in each confined namespace and leave the new
+file writable there. Keeper stays unconfined because it owns the policy, the lab CA
 key, and the journal.
 
 Same-uid ptrace between the launcher and a stub is not additionally blocked.

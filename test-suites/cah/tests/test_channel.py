@@ -32,7 +32,7 @@ from cah.channel import (
 )
 from cah.crypto_lab import generate_private, public_key
 from cah.registry import AdmissionRegistry, bind_process, rebind_channel, save_registry
-from cah.rpc import open_channel, rpc_error, rpc_ok, serve
+from cah.rpc import _drain, open_channel, rpc_error, rpc_ok, serve
 
 
 def _wait_address(root: Path, role: str) -> str:
@@ -329,6 +329,42 @@ class ServedChannelTests(unittest.TestCase):
             read_frame(sock)
         self.assertEqual(self.calls, ["Ping"])
 
+    def test_process_move_is_refused_as_denied_boot(self) -> None:
+        """The instance rebound to another pid is a new incarnation."""
+        sock = self._connect()
+        channel = open_channel(sock, self.client_key, public_key(self.server_key))
+        self.assertTrue(channel.call("Ping", {})["ok"])
+        other = subprocess.Popen(["sleep", "30"])
+        try:
+            bind_process(self.registry, "omi-1", other.pid)
+            self.assertEqual(channel.call("Ping", {}), rpc_error("denied_boot"))
+        finally:
+            other.kill()
+            other.wait(timeout=5)
+
+    def test_refused_peer_cannot_hold_the_drain_open(self) -> None:
+        """A peer that keeps sending after a refusal is cut off within ~1 s."""
+        left, right = socket.socketpair()
+        self.addCleanup(left.close)
+        self.addCleanup(right.close)
+        stop = threading.Event()
+
+        def trickle() -> None:
+            while not stop.is_set():
+                try:
+                    left.sendall(b"x")
+                except OSError:
+                    return
+                time.sleep(0.2)
+
+        thread = threading.Thread(target=trickle, daemon=True)
+        thread.start()
+        drainer = threading.Thread(target=_drain, args=(right,), daemon=True)
+        drainer.start()
+        drainer.join(timeout=3)
+        stop.set()
+        self.assertFalse(drainer.is_alive())
+
     def test_removed_row_is_refused_on_the_next_call(self) -> None:
         """A row that is gone is denied_unadmitted, then FIN."""
         sock = self._connect()
@@ -436,7 +472,7 @@ class PidfdTests(unittest.TestCase):
                                 "cert_fingerprint": None,
                                 "pid": None,
                                 "starttime": None,
-                                "channel_public": "ab" * 32,
+                                "channel_public": "1b" * 32,
                             }
                         ],
                     ),
