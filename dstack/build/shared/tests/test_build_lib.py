@@ -274,5 +274,99 @@ class WorkflowTests(unittest.TestCase):
                                 )
 
 
+class CloneScriptTests(unittest.TestCase):
+    """The image clone must authenticate without putting the token in argv."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.work = Path(self.tmp.name)
+        self.git_log = self.work / "git-args.txt"
+        bindir = self.work / "bin"
+        bindir.mkdir()
+        git = bindir / "git"
+        git.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import base64
+                import os
+                import sys
+                from pathlib import Path
+
+                argv = sys.argv[1:]
+                with Path(os.environ["GIT_LOG"]).open("a") as log:
+                    log.write(repr(argv) + "\\n")
+                token = "test-token"
+                if any(token in arg for arg in argv):
+                    sys.stderr.write("token leaked into argv\\n")
+                    sys.exit(5)
+                if argv[:1] == ["clone"]:
+                    value = os.environ.get("GIT_CONFIG_VALUE_0", "")
+                    expect = os.environ.get("EXPECT_AUTH", "")
+                    if expect == "basic":
+                        prefix = "AUTHORIZATION: basic "
+                        if not value.startswith(prefix):
+                            sys.stderr.write("missing basic header\\n")
+                            sys.exit(3)
+                        raw = base64.b64decode(value[len(prefix):])
+                        if raw != b"x-access-token:test-token":
+                            sys.stderr.write("bad basic payload\\n")
+                            sys.exit(4)
+                    elif value:
+                        sys.stderr.write("unexpected auth header\\n")
+                        sys.exit(3)
+                    Path("repo").mkdir()
+                    sys.exit(0)
+                if argv[:2] == ["-C", "repo"] and "checkout" in argv:
+                    if os.environ.get("GIT_CONFIG_VALUE_0"):
+                        sys.stderr.write("auth header survived checkout\\n")
+                        sys.exit(6)
+                    sys.exit(0)
+                sys.stderr.write("unexpected git args\\n")
+                sys.exit(7)
+                """
+            )
+        )
+        git.chmod(0o755)
+        self.env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "GIT_LOG": str(self.git_log),
+            "DSTACK_SRC_URL": "https://github.com/example/dstack.git",
+            "DSTACK_REV": "abc123",
+            "GIT_CONFIG_COUNT": "",
+            "GIT_CONFIG_KEY_0": "",
+            "GIT_CONFIG_VALUE_0": "",
+        }
+
+    def run_clone(self):
+        return subprocess.run(
+            ["bash", str(ROOT / "dstack/build/shared/clone-dstack-src.sh")],
+            cwd=self.work,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_token_is_basic_auth_and_not_in_argv(self):
+        secret = self.work / "github_token"
+        secret.write_text("test-token\n")
+        self.env["DSTACK_CLONE_SECRET_FILE"] = str(secret)
+        self.env["EXPECT_AUTH"] = "basic"
+        result = self.run_clone()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = self.git_log.read_text()
+        self.assertNotIn("test-token", logged)
+        self.assertIn("clone", logged)
+
+    def test_public_clone_stays_anonymous(self):
+        self.env["DSTACK_CLONE_SECRET_FILE"] = str(self.work / "missing-token")
+        self.env["EXPECT_AUTH"] = ""
+        result = self.run_clone()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("test-token", self.git_log.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()
