@@ -115,6 +115,8 @@ begin_run() {
   docker volume ls -q --filter "label=$LABEL" | xargs -r docker volume rm >/dev/null
   find /run/eggomi-gv -maxdepth 1 -name 'run-*' ! -path "$RUN_DIR" -exec rm -rf {} +
   purge_restore_copies
+  # Per-run rules an earlier suite left behind (older suites added their own
+  # floor; current ones only open a launcher hole in S4).
   local rule
   { iptables -S INPUT | grep -E -- '-i gv[kc][0-9a-f]{8} ' || true; } | sed 's/^-A /-D /' | while read -r rule; do
     # shellcheck disable=SC2086 # a rule is a list of iptables words
@@ -134,31 +136,89 @@ cleanup() {
   # Containers first: their checkpoints (guard key and sessions in RAM)
   # live in their directories and go with them.
   docker ps -aq --filter "label=$LABEL=$RUN_ID" | xargs -r docker rm -f >/dev/null 2>&1 || true
-  floor_off
+  floor_hole_close
   docker network rm "$NET_K" "$NET_C" >/dev/null 2>&1 || true
   docker volume rm "$VOL_K" >/dev/null 2>&1 || true
   purge_restore_copies
   rm -rf "$RUN_DIR"
 }
 
-# The CVM floor for the role bridges: Docker's --internal stops egress, but a
-# sandbox can still open connections to the CVM itself through its bridge
-# gateway (dstack-guest-agent on :8090, the lab sshd). Drop new connections
-# from the role bridges to the CVM; replies to the CVM's own connections
-# still pass. Container-to-container traffic on a bridge is not INPUT.
-floor_on() {
-  local br
-  for br in "$BR_K" "$BR_C"; do
-    iptables -I INPUT -i "$br" -m conntrack --ctstate NEW,INVALID -j DROP
-  done
+# jq_ok ARGS...: jq -e, quiet. For checks.
+jq_ok() {
+  jq -e "$@" >/dev/null
 }
 
-floor_off() {
-  local br
-  for br in "$BR_K" "$BR_C"; do
-    while iptables -D INPUT -i "$br" -m conntrack --ctstate NEW,INVALID -j DROP 2>/dev/null; do :; done
-  done
+# The CVM floor is init-gvisor.sh's (measured, in compose-hash): an
+# EGGOMI-FLOOR chain, jumped to first from INPUT, that drops new connections
+# from docker0, br-*, and the gv* role bridges to the CVM itself. The suites
+# install no floor of their own, so a CVM booted without it fails the checks.
+# Prints the evidence: the chain's rules and INPUT's first rule, IPv4 and IPv6.
+floor_evidence() {
+  local v4 v6 first4 first6
+  v4=$(iptables -w -S EGGOMI-FLOOR 2>/dev/null || true)
+  v6=$(ip6tables -w -S EGGOMI-FLOOR 2>/dev/null || true)
+  first4=$(iptables -w -S INPUT 2>/dev/null | sed -n 2p)
+  first6=$(ip6tables -w -S INPUT 2>/dev/null | sed -n 2p)
+  jq -n --arg v4 "$v4" --arg v6 "$v6" --arg f4 "$first4" --arg f6 "$first6" '
+    def rules($s): $s | split("\n") | map(select(length > 0));
+    {ipv4: {first_input_rule: $f4, chain: rules($v4)},
+     ipv6: {first_input_rule: $f6, chain: rules($v6)}}'
 }
+
+# jq test over floor_evidence: both families jump to the floor first, return
+# established traffic, and drop the rest from every container bridge.
+# shellcheck disable=SC2034 # used by the suites that source this file
+FLOOR_TEST='[.ipv4, .ipv6] | all(.first_input_rule == "-A INPUT -j EGGOMI-FLOOR"
+  and (.chain[1] | test("^-A EGGOMI-FLOOR -m conntrack --ctstate (RELATED,ESTABLISHED|ESTABLISHED,RELATED) -j RETURN$"))
+  and (.chain | any(. == "-A EGGOMI-FLOOR -i docker0 -j DROP"))
+  and (.chain | any(. == "-A EGGOMI-FLOOR -i br-+ -j DROP"))
+  and (.chain | any(. == "-A EGGOMI-FLOOR -i gv+ -j DROP")))'
+
+# A one-rule hole in the floor for the launcher container only, ahead of it:
+# the S4 control that shows the probe sees the CVM's services when nothing
+# blocks them.
+floor_hole() {
+  iptables -w "$1" INPUT -i "$BR_K" -s "$TOOLS_IP" -j ACCEPT
+}
+
+floor_hole_close() {
+  while floor_hole -D 2>/dev/null; do :; done
+}
+
+# The checkpoint policy init-gvisor.sh installs (measured): pristine rule,
+# restore without residue, and the post-fill reaper.
+GV_CKPT=/run/eggomi/bin/gv-ckpt
+
+# gv_ckpt ARGS...: prints gv-ckpt's JSON reply and adds the exit status as
+# .exit, so a refusal (3) is evidence, not an errexit. A missing tool reads
+# as {"code": "missing", "exit": 127}.
+gv_ckpt() {
+  local out rc=0
+  if [[ ! -x "$GV_CKPT" ]]; then
+    printf '{"code":"missing","exit":127}\n'
+    return 0
+  fi
+  out=$("$GV_CKPT" "$@") || rc=$?
+  [[ -n "$out" ]] || out='{}'
+  jq -c --argjson rc "$rc" '. + {exit: $rc}' <<<"$out" 2>/dev/null \
+    || jq -cn --arg o "$out" --argjson rc "$rc" '{code: "unparsed", output: $o, exit: $rc}'
+}
+
+# The ZFS ARC as the kernel reports it, with the cap init-gvisor.sh set.
+arc_evidence() {
+  local param=/sys/module/zfs/parameters/zfs_arc_max
+  jq -n --arg param "$(cat "$param" 2>/dev/null || echo -1)" \
+    --arg mem "$(awk '/^MemTotal:/ {printf "%d", $2 * 1024}' /proc/meminfo)" \
+    --argjson stats "$(awk '$1 == "c_min" || $1 == "c_max" || $1 == "size" {printf "%s\"%s\": %s", s, $1, $3; s = ", "} BEGIN {printf "{"} END {print "}"}' \
+      /proc/spl/kstat/zfs/arcstats 2>/dev/null || echo '{}')" \
+    '{zfs_arc_max: ($param | tonumber), mem_total: ($mem | tonumber)} + $stats'
+}
+
+# jq test over arc_evidence: the cap is set, in force, and within
+# MemTotal/16 clamped to 256 MiB..1 GiB (or just above zfs_arc_min).
+# shellcheck disable=SC2034
+ARC_TEST='.zfs_arc_max > 0 and .c_max == .zfs_arc_max and .c_max <= 1073741824
+  and (.c_max <= ([.mem_total / 16, 268435456] | max) or .c_max <= .c_min + 67108864)'
 
 setup_lab() {
   docker network create --internal --label "$LABEL=$RUN_ID" --subnet 10.231.10.0/24 \

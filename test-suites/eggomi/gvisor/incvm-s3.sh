@@ -11,6 +11,11 @@
 # memory.reclaim and stopping the browser return; the CVM's own memory; and
 # whether keeper RPC stays up while the browser is checkpointed, stopped,
 # and restored. Metric names follow s3-smolvm.sh where they apply.
+#
+# Release hardening (eggomi#780) checks, each failing on a CVM booted
+# without it: the measured CVM floor is in place; the browser's checkpoint
+# and restore go through gv-ckpt, which leaves no staged copy in /tmp; and
+# the ZFS ARC is capped and stays under its cap.
 set -euo pipefail
 
 SUITE_TAG=s3
@@ -120,7 +125,8 @@ main() {
   : >"$RUN_DIR/burst.jsonl"
   trap cleanup EXIT
   setup_lab
-  floor_on
+  floor_evidence >"$RUN_DIR/floor.json"
+  check cvm_floor_measured jq_ok "$FLOOR_TEST" "$RUN_DIR/floor.json"
   local t
 
   # keeper -----------------------------------------------------------------
@@ -145,6 +151,8 @@ main() {
   wait_browser 90 || die "the guard did not reach Chromium's DevTools"
   metric 'lifecycle_seconds{machine="browser",op="ready"}' "$(since "$t")"
   metric 'lifecycle_seconds{machine="browser",op="exec_p50"}' "$(exec_p50 "$B")"
+  gv_ckpt arm "$B" >"$RUN_DIR/ckpt-arm.json"
+  check browser_armed_pristine jq_ok '.code == "ok" and .pristine' "$RUN_DIR/ckpt-arm.json"
   check keeper_rpc_from_guard guard_ok '{"cmd":"ping"}'
   check chromium_own_sandbox chromium_sandboxed
   gvctl cgroup "$(cid "$K")" | jq -c '{machine: "keeper", memory_max, cpu_max}' >"$RUN_DIR/limits.jsonl"
@@ -204,8 +212,15 @@ main() {
   sleep 1
   probe_t0=$(date +%s.%N)
 
+  # No fill happens in S3, so the browser is pristine and its checkpoint may
+  # be kept for reuse. Without gv-ckpt the check fails and the raw Docker
+  # checkpoint keeps the measurements going.
   t=$(now)
-  docker checkpoint create --leave-running "$B" s3 >/dev/null || die "checkpoint failed"
+  gv_ckpt create --reuse --leave-running "$B" s3 >"$RUN_DIR/ckpt-create.json"
+  check checkpoint_via_policy jq_ok '.code == "ok" and .kind == "pristine"' "$RUN_DIR/ckpt-create.json"
+  if [[ "$(jq -r '.code' "$RUN_DIR/ckpt-create.json")" != ok ]]; then
+    docker checkpoint create --leave-running "$B" s3 >/dev/null || die "checkpoint failed"
+  fi
   metric 'lifecycle_seconds{machine="browser",op="checkpoint"}' "$(since "$t")"
   local ckpt
   ckpt="/var/lib/docker/containers/$(cid "$B")/checkpoints/s3"
@@ -226,21 +241,32 @@ main() {
   metric 'cvm_returned_bytes{via="browser_stop"}' "$((cvm_before - cvm_after))"
 
   t=$(now)
-  docker start --checkpoint s3 "$B" >/dev/null || die "restore failed"
+  gv_ckpt restore "$B" s3 >"$RUN_DIR/ckpt-restore.json"
+  if [[ "$(jq -r '.code' "$RUN_DIR/ckpt-restore.json")" != ok ]]; then
+    log "gv-ckpt restore: $(cat "$RUN_DIR/ckpt-restore.json"); restoring with Docker alone"
+    docker start --checkpoint s3 "$B" >/dev/null || die "restore failed"
+  fi
   metric 'lifecycle_seconds{machine="browser",op="restore_start"}' "$(since "$t")"
   wait_browser 90 || die "restored browser did not answer DevTools"
   metric 'lifecycle_seconds{machine="browser",op="restore_ready"}' "$(since "$t")"
   check keeper_rpc_from_guard_after_restore guard_ok '{"cmd":"ping"}'
   check restored_browser_cdp guard_ok '{"cmd":"browser"}'
   check chromium_own_sandbox_after_restore chromium_sandboxed
-  local copies copy_bytes=0
+  # containerd stages the image in the CVM's tmpfs and never removes it;
+  # gv-ckpt removes it in the restore step. The tool must have seen the
+  # staged copy (the control) and none may remain.
+  local copies copy_bytes=0 copy_count
   copies=$(restore_copies)
   if [[ -n "$copies" ]]; then
     # shellcheck disable=SC2086 # one path per line, no spaces
     copy_bytes=$(du -sbc $copies | awk 'END {print $1}')
   fi
-  metric 'restore_tmp_copies{machine="browser"}' "$(grep -c . <<<"$copies" || true)"
+  copy_count=$(grep -c . <<<"$copies" || true)
+  metric 'restore_tmp_copies{machine="browser"}' "$copy_count"
   metric 'restore_tmp_copy_bytes{machine="browser"}' "$copy_bytes"
+  metric 'restore_staged_bytes_removed{machine="browser"}' "$(jq -r '.staged_bytes // 0' "$RUN_DIR/ckpt-restore.json")"
+  check restore_staged_copy_seen jq_ok '.staged_copies_removed >= 1 and .staged_bytes > 0' "$RUN_DIR/ckpt-restore.json"
+  check no_restore_residue test "$copy_count" -eq 0
   purge_restore_copies
   sleep 2
   mem_sample browser "$B" restored_idle >/dev/null
@@ -265,6 +291,16 @@ main() {
   cvm_sample all_stopped >/dev/null
   metric 'cvm_returned_bytes{via="all_roles_stopped"}' "$((cvm_idle - $(jq -r '.used' <<<"$(gvctl meminfo)")))"
 
+  # The ARC cap is in force, and the ARC stayed under it at every sample
+  # (64 MiB of slack: the ARC overshoots c_max briefly while it evicts).
+  local arc arc_peak
+  arc=$(arc_evidence)
+  printf '%s\n' "$arc" >"$RUN_DIR/arc.json"
+  arc_peak=$(awk '/^eggomi_s3_cvm_zfs_arc_bytes/ {if ($2 > m) m = $2} END {printf "%d", m}' "$PROM")
+  metric 'cvm_zfs_arc_max_bytes' "$(jq -r '.c_max' <<<"$arc")"
+  metric 'cvm_zfs_arc_peak_bytes' "$arc_peak"
+  check zfs_arc_capped jq_ok --argjson peak "$arc_peak" "($ARC_TEST) and \$peak <= .c_max + 67108864" "$RUN_DIR/arc.json"
+
   {
     printf '# Eggomi S3 gVisor sandbox lifecycle (L1, in the simulated-SNP CVM), runsc %s, systrap.\n' "$RUNSC_VERSION"
     printf '# host_rss is the PSS of the sandbox host processes (Sentry, Gofer, systrap stubs);\n'
@@ -280,11 +316,14 @@ main() {
     --slurpfile reclaim "$RUN_DIR/reclaim.json" \
     --slurpfile limits "$RUN_DIR/limits.jsonl" \
     --slurpfile chromium "$RUN_DIR/chromium-sandbox.json" \
+    --slurpfile floor "$RUN_DIR/floor.json" \
+    --slurpfile arc "$RUN_DIR/arc.json" \
+    --slurpfile restore "$RUN_DIR/ckpt-restore.json" \
     --rawfile metrics "$METRICS" \
     '{schema: "eggomi-s3-report/v1", environment: "L1-gvisor", runsc: $version, platform: "systrap",
       run: $run, ok: ($failures | length == 0), failures: $failures, keeper_probe: $probe[0],
       memory_reclaim: $reclaim[0], limits: $limits, chromium_sandbox: $chromium[0].chromium,
-      metrics: $metrics}' >"$REPORT"
+      cvm_floor: $floor[0], zfs_arc: $arc[0], restore: $restore[0], metrics: $metrics}' >"$REPORT"
   log "metrics: $METRICS"
   if ((${#FAILURES[@]})); then
     die "s3 failed checks: ${FAILURES[*]}"

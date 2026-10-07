@@ -210,9 +210,13 @@ computer only.
 
 The recommended inner isolation, one gVisor sandbox per role inside one CVM,
 has its own suites. `scripts/gvisor-lab.sh` deploys a separate lab CVM whose
-`init_script` registers runsc (systrap) with dockerd and starts a lab sshd;
-`s3-gvisor.sh` and `s4-gvisor.sh` run keeper, guard, and browser there, each
-in its own sandbox and cgroup. Both exit 77 when that CVM is missing.
+`init_script` registers runsc (systrap) with dockerd, installs the release
+hardening of eggomi#780 (the CVM input floor, the ZFS ARC cap, and
+`gv-ckpt`, the checkpoint policy), and starts a lab sshd. `s3-gvisor.sh` and
+`s4-gvisor.sh` run keeper, guard, and browser there, each in its own sandbox
+and cgroup. Both exit 77 when that CVM is missing. A CVM booted with an older
+init script fails their hardening checks. `gv-ckpt` also has host-only unit
+tests, `scripts/gvisor-unit-tests.sh`.
 
 ```bash
 . "$EGGOMI_LAB_DIR/env.sh"
