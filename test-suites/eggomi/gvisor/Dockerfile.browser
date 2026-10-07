@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+# Browser for the L1 gVisor lab: headless Chromium as a non-root user, so
+# Chromium's own sandbox (namespaces + seccomp-bpf) stays on, plus Python for
+# the CDP relay that publishes DevTools to the guard's network only.
+FROM alpine:3.22
+RUN apk add --no-cache chromium font-dejavu python3 \
+ && adduser -D -u 10001 chrome

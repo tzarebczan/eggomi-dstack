@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+#
+# L1 gVisor inner-isolation lab CVM. The roles (keeper, guard, browser) are
+# created per run by the S3'/S4' harness over the lab shell, so their
+# lifecycle can be timed. This service only proves that the app compose
+# itself can ask for the runsc runtime that init-gvisor.sh registers.
+services:
+  runsc-smoke:
+    image: alpine:3.22
+    runtime: runsc
+    network_mode: none
+    restart: "no"
+    command: ["sh", "-c", "echo runsc-smoke kernel=$(uname -r); sleep infinity"]
