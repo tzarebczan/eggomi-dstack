@@ -339,8 +339,14 @@ inlined into the init script when gvisor-lab.sh renders it, and installed as
 systemd service, `eggomi-gv-reaper.service`, with `Restart=always` and no
 start-rate limit, so a kill or the OOM killer does not end it; S3'
 `reaper_supervised` kills it and requires a new main process within 10 s.
-The reaper drops a container's policy state only when dockerd answers "No
-such container". If dockerd does not answer (restarting, unreachable, or
+Deadlines come first and need no docker: each pass deletes every post-fill
+image past its deadline straight from disk, reading only the record files,
+before it makes any docker call, and the reaper repeats that pass every
+0.2 s while another step holds the policy lock. So a hung dockerd (each call
+waits up to 120 s) or a checkpoint stuck on it cannot keep an image past its
+deadline (eggomi#780's last P1). Every deletion removes the directory before
+it tells dockerd. The reaper drops a container's policy state only when
+dockerd answers "No such container". If dockerd does not answer (restarting, unreachable, or
 past the 120 s docker timeout), it keeps the state, still enforces the
 deadlines on the image files, and retries on its next pass. Its state is in
 tmpfs, so `arm` also

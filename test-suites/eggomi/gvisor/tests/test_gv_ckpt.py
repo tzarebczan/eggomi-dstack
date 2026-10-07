@@ -274,6 +274,69 @@ class GvCkptTest(unittest.TestCase):
             gv_ckpt.DOCKER_TIMEOUT_SECONDS = saved
             del os.environ["FAKE_DOCKER_HANG"]
 
+    def test_reap_deletes_expired_images_before_any_docker_call(self) -> None:
+        """Expiry comes from the record files; a hung dockerd cannot delay it."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("create", "--reuse", "--leave-running", "browser", "pristine")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        self.run_cmd("create", "--leave-running", "browser", "suspend")
+        time.sleep(0.4)
+        seen = []
+        real = gv_ckpt.docker
+
+        def watching(*args: str, check: bool = True):
+            seen.append((args[:2], self.image("suspend").exists()))
+            return real(*args, check=check)
+
+        gv_ckpt.docker = watching
+        try:
+            rc, out = self.run_cmd("reap")
+        finally:
+            gv_ckpt.docker = real
+        self.assertEqual(rc, 0)
+        self.assertTrue(seen, "reap made no docker call at all")
+        self.assertFalse(seen[0][1], f"first docker call {seen[0][0]} saw the image")
+        self.assertFalse(self.image("suspend").exists())
+        self.assertTrue(self.image("pristine").exists())
+        self.assertEqual([r["name"] for r in out["reaped"]], ["suspend"])
+        state = json.loads(
+            (self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")).read_text()
+        )
+        self.assertEqual(sorted(state["checkpoints"]), ["pristine"])
+
+    def test_the_reaper_expires_on_disk_while_the_lock_is_held(self) -> None:
+        """A step stuck on dockerd holds the lock; the deadline still holds."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        self.run_cmd("create", "--leave-running", "browser", "suspend")
+        stop = threading.Event()
+        thread = threading.Thread(target=gv_ckpt.reap_loop, args=(0.1, stop))
+        out = io.StringIO()
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold() -> None:
+            with gv_ckpt.locked():
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(5)
+        try:
+            with contextlib.redirect_stdout(out):
+                thread.start()
+                deadline = time.time() + 3
+                while self.image("suspend").exists() and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(self.image("suspend").exists())
+        finally:
+            release.set()
+            holder.join(5)
+            stop.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+
     def test_reap_deletes_every_image_left_over_from_before_a_reboot(self) -> None:
         """A cleared /run leaves images with no record; one pass deletes them."""
         self.run_cmd("arm", "browser")

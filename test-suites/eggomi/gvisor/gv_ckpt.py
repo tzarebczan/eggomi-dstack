@@ -52,7 +52,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 STATE_DIR = Path(os.environ.get("EGGOMI_GV_CKPT_STATE", "/run/eggomi/gv-ckpt"))
 DOCKER = os.environ.get("EGGOMI_GV_CKPT_DOCKER", "docker")
@@ -156,11 +156,25 @@ def inspect(ctr: str) -> Dict[str, Any]:
 
 
 @contextlib.contextmanager
-def locked() -> Iterator[None]:
-    """Serialise every policy step, so a fill cannot land mid-checkpoint."""
+def locked(while_waiting: Optional[Callable[[], None]] = None) -> Iterator[None]:
+    """Serialise every policy step, so a fill cannot land mid-checkpoint.
+
+    ``while_waiting`` runs every DEADLINE_POLL_SECONDS until the lock is
+    free: the reaper's deadline pass, which needs no lock, so a step that
+    holds the lock while dockerd hangs does not hold back a deadline.
+    """
     STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(STATE_DIR / ".lock", "a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if while_waiting is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        else:
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    while_waiting()
+                    time.sleep(DEADLINE_POLL_SECONDS)
         yield
 
 
@@ -206,11 +220,47 @@ def tree_bytes(path: Path) -> int:
 
 
 def delete_checkpoint(ctr: str, cid: str, name: str) -> bool:
-    """Remove a checkpoint through dockerd, then from disk. True if gone."""
-    docker("checkpoint", "rm", ctr, name, check=False)
+    """Remove a checkpoint from disk, then tell dockerd. True if gone.
+
+    The disk first: dockerd lists checkpoints from these directories, so
+    the image is gone once its directory is, and a docker call that hangs
+    (dockerd restarting) cannot keep it alive past its deadline.
+    """
     target = checkpoint_dir(cid, name)
     shutil.rmtree(target, ignore_errors=True)
+    docker("checkpoint", "rm", ctr, name, check=False)
     return not target.exists()
+
+
+def expire_on_disk(now: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Delete every post-fill image past its deadline, from the records alone.
+
+    No docker call and no state write, so it runs before anything that can
+    hang, and without the policy lock: a checkpoint or restore that holds
+    the lock while dockerd hangs cannot delay a deadline. The records drop
+    the reaped entries later, under the lock (reap_once).
+    """
+    now = now_ms() if now is None else now
+    reaped: List[Dict[str, Any]] = []
+    for path in sorted(STATE_DIR.glob("*.json")):
+        try:
+            state = json.loads(path.read_text("utf-8"))
+            cid, records = state["cid"], state["checkpoints"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        for name, record in sorted(records.items()):
+            if record.get("kind") != "post_fill" or record.get("deadline_ms") is None:
+                continue
+            if record["deadline_ms"] > now or not NAME_RE.match(name):
+                continue
+            target = checkpoint_dir(cid, name)
+            if not target.exists():
+                continue
+            shutil.rmtree(target, ignore_errors=True)
+            reaped.append(
+                {"cid": cid[:12], "name": name, "deleted": not target.exists()}
+            )
+    return reaped
 
 
 def check_name(name: str) -> None:
@@ -376,9 +426,23 @@ def reap_once() -> Dict[str, Any]:
     under the policy lock, like ``create``, so an image being written is
     never taken for an orphan.
     """
-    reaped: List[Dict[str, Any]] = []
     unknown: List[str] = []
     now = now_ms()
+    # Deadlines first, from the record files, before any docker call: a hung
+    # dockerd answers each call only after DOCKER_TIMEOUT_SECONDS, and an
+    # expired image must not wait for that (eggomi#780).
+    reaped: List[Dict[str, Any]] = expire_on_disk(now)
+    for path in sorted(STATE_DIR.glob("*.json")):
+        state = json.loads(path.read_text("utf-8"))
+        cid = state["cid"]
+        changed = False
+        for name, record in list(state["checkpoints"].items()):
+            if record["kind"] == "post_fill" and record["deadline_ms"] <= now:
+                if not checkpoint_dir(cid, name).exists():
+                    del state["checkpoints"][name]
+                    changed = True
+        if changed:
+            save(state)
     for path in sorted(STATE_DIR.glob("*.json")):
         state = json.loads(path.read_text("utf-8"))
         cid = state["cid"]
@@ -480,6 +544,13 @@ def next_deadline_s() -> Optional[float]:
 DEADLINE_POLL_SECONDS = 0.2
 
 
+def expire_and_report() -> None:
+    """Run the reaper's lockless deadline pass; print what it reaped."""
+    reaped = expire_on_disk()
+    if reaped:
+        print(json.dumps({"code": "ok", "reaped": reaped}), flush=True)
+
+
 def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
     """Reap until killed: at each deadline, and every INTERVAL otherwise.
 
@@ -490,7 +561,8 @@ def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
     stop = stop or threading.Event()
     while not stop.is_set():
         try:
-            with locked():
+            expire_and_report()
+            with locked(while_waiting=expire_and_report):
                 out = reap_once()
             if out["reaped"] or out["stale_stage_removed"] or out["docker_unanswered"]:
                 print(json.dumps(out), flush=True)
