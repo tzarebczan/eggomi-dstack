@@ -72,11 +72,62 @@ receipt carries `domain`, `source_domain`, `k256_public`, `report_data`,
 `{"report":[..],"cert_chain":[[..],..]}`. An empty `cert_chain` means the
 verifier fetches ASK and VCEK from an AMD-KDS-shaped endpoint, which is what
 guest quotes from the simulated TSM need. `BootstrapAttestation` is the
-bootstrap receipt plus its `evidence`. Each v2 type has a `verify` method,
-and the `snp-sim-kms fixtures --seed HEX --out FILE` target dumps every v1
-and v2 output as the exact JSON strings the crate emits.
+bootstrap receipt plus its `evidence`. Each v2 type has a `verify` method.
 
-`HOST_DATA` and MrConfigV3 (item 4) still wait for hardware vectors.
+## Fixture-dump target (eggomi#757 item 3)
+
+```bash
+CARGO_TARGET_DIR=... ./test-suites/eggomi/scripts/kms-fixtures.sh [OUT]
+```
+
+The script builds `snp-sim-kms`, runs `snp-sim-kms fixtures --seed HEX
+--out FILE`, and adds the source commit (`source_sha`, and `source_dirty`
+when the KMS or mock-attestation crates have local changes) to the
+provenance. The default seed is the crate tests' `0x11 x 32`; it derives only
+the mock ARK, ASK, and VCEK keys. The default output is
+`test-suites/eggomi/.state/work/snp-sim-kms-fixtures.json`.
+
+`snp_sim_kms::fixtures::fixture_set` builds the set and checks it before
+anything is written. Every positive output verifies through the crate's
+public `verify` methods. The onboarded KMS must release the source's key.
+Every negative must be refused by the KMS, and the production gate must
+refuse every quote. If any check fails, nothing is written.
+`check_fixture_set` repeats the keeper-side checks on a set read back from
+disk.
+
+Schema `snp-sim-kms-fixtures/v2`. Each `record`, `receipt`, `evidence`, and
+v2 `bootstrap`/`onboard` value is the exact `serde_json` string the crate
+emits. Hex is lower case.
+
+| Key | Contents |
+| --- | --- |
+| `seed`, `ark_pem` | the mock-attestation seed and its ARK |
+| `measurement`, `unlisted_measurement` | `0x33 x 48`, enrolled by the source and target KMSs; `0x44 x 48`, enrolled only by a third KMS |
+| `host_data` | 32 zero bytes, as in every simulated quote (item 4) |
+| `app_report_data` | v1 `report_data` for `app-a` and `app-b` |
+| `v1.bootstrap` | `BootstrapReceipt` and its evidence |
+| `v1.onboard` | `OnboardReceipt` of `kms-2.lab.example`, onboarded from `kms.lab.example` |
+| `v1.releases` | `AppKeyRecord`s with evidence: `app_a`, `app_b`, `app_a_onboarded` (released by the onboarded KMS, same key), and `unlisted` (the third KMS) |
+| `v2.bootstrap`, `v2.onboard` | `BootstrapAttestation`; `AttestedOnboardReceipt` |
+| `v2.releases` | `SignedAppKeyRelease`s with `nonce` and evidence: `app_a`, `app_b`, `app_a_onboarded` (signed by the same root under `kms_domain` `kms-2.lab.example`) |
+| `negatives` | `stale_nonce` (`v2.releases.app_a`'s quote, presented for another nonce), `wrong_report_data`, and `tdx_quote` (hex). The KMS refuses each |
+
+Root keys are minted fresh in each run and discarded. Two runs therefore
+differ in every byte that depends on a root, and every key in the set opens
+nothing. Mock certificates are valid from one day before `generated_at_unix`
+to 30 days after it.
+
+## HOST_DATA and MrConfigV3 (eggomi#757 item 4)
+
+Not implemented; this is the record. `SimTsm::quote` passes 32 zero bytes
+as `HOST_DATA`, so every simulated quote has `HOST_DATA` = 0 and there is no
+MrConfigV3 identity to bind. The mock generator already takes a `host_data`
+argument (`SevSnpGenerator::attest_with_measurement`), so the KMS change is
+small once the format is fixed. What it waits on is S6 on real SEV-SNP
+hardware: the `HOST_DATA` that dstack's VMM sets for a launch, and the
+MrConfigV3 layout it commits to, have to be read from a hardware quote
+before the lab mints them. Until then the keeper must not treat
+`HOST_DATA` as an identity, and the fixture set records it as zero.
 
 ## Long-running server (S2)
 
@@ -95,7 +146,7 @@ its ARK is the job's mock root. It enrolls the MEASUREMENT recomputed from a
 VM's `vm_config` with `dstack-mr`, and fetches VCEKs from the mock collateral
 server. The release gate stays closed unless `--release-enabled` is passed.
 Other subcommands are `measurement`, `verify-release` (the keeper-side check
-of bootstrap plus signature), and `production-gate`.
+of bootstrap plus signature), `production-gate`, and `fixtures` (above).
 
 Releases travel over plain HTTP between the guest and the host, and the
 guest client returns the key to the host. This is acceptable only because
@@ -107,5 +158,6 @@ From the repository root:
 
 ```bash
 cargo test --manifest-path dstack/Cargo.toml -p snp-sim-kms
+./test-suites/eggomi/scripts/kms-fixtures.sh   # the checked fixture set
 ./test-suites/eggomi/scripts/s2-kms.sh   # needs the L1 lab
 ```

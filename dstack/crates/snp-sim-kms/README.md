@@ -10,6 +10,9 @@ It follows the dstack KMS onboarding shape:
 4. `release_signed` (v2) binds a caller nonce and signs the record with the
    attested root key. `onboard_from_attested` adds the target's own quote, and
    `bootstrap_attestation` exposes the bootstrap evidence.
+5. `fixtures::fixture_set` builds the checked keeper-side fixture set that
+   `snp-sim-kms fixtures` and `test-suites/eggomi/scripts/kms-fixtures.sh`
+   write.
 
 The `snp-sim-kms` binary serves these over HTTP for the S2 harness. See
 [docs/eggomi/simulated-snp-kms.md](../../../docs/eggomi/simulated-snp-kms.md)
