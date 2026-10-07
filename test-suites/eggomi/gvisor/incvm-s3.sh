@@ -127,7 +127,7 @@ main() {
   t=$(now); create_keeper; metric 'lifecycle_seconds{machine="keeper",op="create"}' "$(since "$t")"
   t=$(now); docker start "$K" >/dev/null; metric 'lifecycle_seconds{machine="keeper",op="start"}' "$(since "$t")"
   install_keeper_state
-  wait_keeper || die "keeper did not answer on $KEEPER_ADDR"
+  wait_keeper 60 || die "keeper did not answer on $KEEPER_ADDR"
   metric 'lifecycle_seconds{machine="keeper",op="ready"}' "$(since "$t")"
   metric 'lifecycle_seconds{machine="keeper",op="exec_p50"}' "$(exec_p50 "$K")"
 
@@ -135,14 +135,14 @@ main() {
   t=$(now); create_guard; metric 'lifecycle_seconds{machine="guard",op="create"}' "$(since "$t")"
   t=$(now); docker start "$G" >/dev/null; metric 'lifecycle_seconds{machine="guard",op="start"}' "$(since "$t")"
   install_guard_state
-  wait_guard || die "guard did not reach the keeper"
+  wait_guard 60 || die "guard did not reach the keeper"
   metric 'lifecycle_seconds{machine="guard",op="ready"}' "$(since "$t")"
   metric 'lifecycle_seconds{machine="guard",op="exec_p50"}' "$(exec_p50 "$G")"
 
   # browser ----------------------------------------------------------------
   t=$(now); create_browser; metric 'lifecycle_seconds{machine="browser",op="create"}' "$(since "$t")"
   t=$(now); docker start "$B" >/dev/null; metric 'lifecycle_seconds{machine="browser",op="start"}' "$(since "$t")"
-  wait_browser || die "the guard did not reach Chromium's DevTools"
+  wait_browser 90 || die "the guard did not reach Chromium's DevTools"
   metric 'lifecycle_seconds{machine="browser",op="ready"}' "$(since "$t")"
   metric 'lifecycle_seconds{machine="browser",op="exec_p50"}' "$(exec_p50 "$B")"
   check keeper_rpc_from_guard guard_ok '{"cmd":"ping"}'
@@ -228,7 +228,7 @@ main() {
   t=$(now)
   docker start --checkpoint s3 "$B" >/dev/null || die "restore failed"
   metric 'lifecycle_seconds{machine="browser",op="restore_start"}' "$(since "$t")"
-  wait_browser || die "restored browser did not answer DevTools"
+  wait_browser 90 || die "restored browser did not answer DevTools"
   metric 'lifecycle_seconds{machine="browser",op="restore_ready"}' "$(since "$t")"
   check keeper_rpc_from_guard_after_restore guard_ok '{"cmd":"ping"}'
   check restored_browser_cdp guard_ok '{"cmd":"browser"}'
