@@ -47,6 +47,13 @@ def main(argv: list) -> int:
         sys.stderr.write(f"No such container: {ref}\n")
         raise SystemExit(1)
 
+    time.sleep(float(os.environ.get("FAKE_DOCKER_HANG", "0")))
+    if os.environ.get("FAKE_DOCKER_DOWN"):
+        sys.stderr.write(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+            "Is the docker daemon running?\n"
+        )
+        return 1
     if argv[:3] == ["inspect", "--type", "container"]:
         c = find(argv[3])
         out = {

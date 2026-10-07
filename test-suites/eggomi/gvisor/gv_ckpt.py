@@ -84,12 +84,40 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# A docker call that hangs (dockerd restarting) must not stall the policy.
+DOCKER_TIMEOUT_SECONDS = 120
+
+
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    """Run the docker CLI, capturing its output."""
-    proc = subprocess.run([DOCKER, *args], capture_output=True, text=True, check=False)
+    """Run the docker CLI, capturing its output. A timeout reads as exit 124."""
+    try:
+        proc = subprocess.run(
+            [DOCKER, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DOCKER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        proc = subprocess.CompletedProcess([DOCKER, *args], 124, "", "docker timed out")
     if check and proc.returncode != 0:
         raise RuntimeError(f"docker {args[0]} failed: {proc.stderr.strip()[:400]}")
     return proc
+
+
+def container_gone(cid: str) -> Optional[bool]:
+    """Whether dockerd says the container does not exist.
+
+    True only on a definite "No such container" (or "No such object") from
+    the daemon, False when the container exists, and None when the answer is
+    unknown: dockerd restarting, unreachable, or timing out.
+    """
+    proc = docker("inspect", "--type", "container", cid, check=False)
+    if proc.returncode == 0:
+        return False
+    if re.search(r"No such (container|object)", proc.stderr):
+        return True
+    return None
 
 
 def parse_time(value: str) -> float:
@@ -343,14 +371,20 @@ def reap_once() -> Dict[str, Any]:
     contents are unknown: it is deleted too.
     """
     reaped: List[Dict[str, Any]] = []
+    unknown: List[str] = []
     now = now_ms()
     for path in sorted(STATE_DIR.glob("*.json")):
         state = json.loads(path.read_text("utf-8"))
         cid = state["cid"]
-        if docker("inspect", "--type", "container", cid, check=False).returncode != 0:
+        gone = container_gone(cid)
+        if gone:
             # The container's directory, checkpoints included, went with it.
             path.unlink(missing_ok=True)
             continue
+        if gone is None:
+            # dockerd did not answer: keep the state and retry next pass.
+            # Deadlines are still enforced below, on the files themselves.
+            unknown.append(cid[:12])
         changed = False
         ckpts = DOCKER_ROOT / "containers" / cid / "checkpoints"
         if ckpts.is_dir():
@@ -380,7 +414,12 @@ def reap_once() -> Dict[str, Any]:
             if time.time() - copy.stat().st_mtime > STALE_STAGE_SECONDS:
                 shutil.rmtree(copy, ignore_errors=True)
                 stale += 1
-    return {"code": "ok", "reaped": reaped, "stale_stage_removed": stale}
+    return {
+        "code": "ok",
+        "reaped": reaped,
+        "stale_stage_removed": stale,
+        "docker_unanswered": unknown,
+    }
 
 
 def after_deadline_check(out: Dict[str, Any], ctr: str, name: str) -> Dict[str, Any]:
@@ -434,7 +473,7 @@ def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
         try:
             with locked():
                 out = reap_once()
-            if out["reaped"] or out["stale_stage_removed"]:
+            if out["reaped"] or out["stale_stage_removed"] or out["docker_unanswered"]:
                 print(json.dumps(out), flush=True)
         except Exception as exc:  # noqa: BLE001 - the reaper must keep running
             print(json.dumps({"code": "error", "message": str(exc)[:400]}), flush=True)

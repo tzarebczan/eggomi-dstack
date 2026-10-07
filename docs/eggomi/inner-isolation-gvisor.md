@@ -335,7 +335,15 @@ booted without it. The suites no longer install anything of their own.
 
 `gv-ckpt` ([`gv_ckpt.py`](../../test-suites/eggomi/gvisor/gv_ckpt.py)) is
 inlined into the init script when gvisor-lab.sh renders it, and installed as
-`/run/eggomi/bin/gv-ckpt` (root only). Its state is in tmpfs, so `arm` also
+`/run/eggomi/bin/gv-ckpt` (root only). Its reaper runs as a transient
+systemd service, `eggomi-gv-reaper.service`, with `Restart=always` and no
+start-rate limit, so a kill or the OOM killer does not end it; S3'
+`reaper_supervised` kills it and requires a new main process within 10 s.
+The reaper drops a container's policy state only when dockerd answers "No
+such container". If dockerd does not answer (restarting, unreachable, or
+past the 120 s docker timeout), it keeps the state, still enforces the
+deadlines on the image files, and retries on its next pass. Its state is in
+tmpfs, so `arm` also
 refuses a container that was created before the current boot. The reaper
 reaps at each deadline and every 5 s otherwise. While it sleeps it rereads
 the deadlines every 0.2 s (state files only), so a deadline added meanwhile
@@ -351,14 +359,15 @@ docker CLI: `test-suites/eggomi/scripts/gvisor-unit-tests.sh`.
 
 Lab runs on 2026-10-07. A fresh CVM, `eggomi-gvisor-780`, was booted with
 the hardened init script beside the standing lab CVM, which was left alone.
-It was redeployed for each revision of the script: four runs, and the last
-one is on this PR's final code. Ranges below cover all four runs.
+It was redeployed for each revision of the script: five runs, and the last
+one is on this PR's final code. Ranges below cover all five runs.
 
 - The boot log shows each step: `ZFS ARC capped at 388786688 bytes` and
   `gv-ckpt installed; reaper running`. `iptables -S` shows `-A INPUT -j
   EGGOMI-FLOOR` as the first rule, and the same chain exists under ip6tables.
-- S3' passed every check: 19/19 in the last three runs, 18/18 in the first,
-  before `browser_never_filled` was added. Seven checks are new:
+- S3' passed every check: 20/20 in the last run, 19/19 in the two
+  before it, and 18/18 in the first, before `browser_never_filled` was
+  added. Eight checks are new: `reaper_supervised`,
   `cvm_floor_measured`, `browser_armed_pristine`, `browser_never_filled`,
   `checkpoint_via_policy`, `restore_staged_copy_seen`,
   `no_restore_residue`, and `zfs_arc_capped`. Restore to ready took 2.13 to
@@ -367,7 +376,7 @@ one is on this PR's final code. Ranges below cover all four runs.
   cold CVM.
 - S4' passed: 14/14 cases, 9/9 boundary checks, and 8/8 policy checks.
   Every leak search found 0 hits, and each positive control hit: canary
-  128-134, filled token 6-7, secret on the keeper volume 1. After the fill,
+  127-134, filled token 6-8, secret on the keeper volume 1. After the fill,
   `create --reuse` was refused (`not_pristine`) and wrote no image. Both
   restores left no copy in `/tmp`; `gv-ckpt` removed 153-155 MB and
   142-144 MB. Both post-fill images were gone 1.44 to 1.49 s after the
@@ -376,7 +385,10 @@ one is on this PR's final code. Ranges below cover all four runs.
   (`unknown_checkpoint`), and the pristine image restored and answered
   DevTools. The floor control behaved as designed: with the hole open, the
   launcher connected to `:8090` and `:22`; with it closed, both connections
-  timed out, as did the browser's.
+  timed out, as did the browser's. In the last run, S3' killed the reaper
+  (main PID 680); systemd started a new one (PID 4686) and the unit stayed
+  active, and S4' then relied on that restarted reaper to delete the
+  post-fill images 1.45 s after expiry.
 - Negative control: the same suites, run on the standing lab CVM booted with
   the earlier init script, fail exactly the hardening checks. S3' fails the
   six new checks it had then. S4' fails all 8 policy checks (`gv-ckpt` is
@@ -385,7 +397,7 @@ one is on this PR's final code. Ranges below cover all four runs.
   gateway's `:8090` and `:22`. The suites left that CVM as they found it.
 - With the cap of 389 MB, the ARC peaked at 393 to 410 MB, against 865 MB
   before. The check allows 64 MiB of overshoot while the ARC evicts. The CVM
-  used 1,046 to 1,080 MB idle and 1,427 to 1,469 MB active, against 1,453
+  used 1,046 to 1,087 MB idle and 1,427 to 1,469 MB active, against 1,453
   and 1,837 MB before. The host-side QEMU RSS peaked at 2.8 to 3.2 GB,
   against 4.0 GB.
 

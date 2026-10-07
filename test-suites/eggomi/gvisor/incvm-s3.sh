@@ -89,6 +89,23 @@ guard_ok() {
   [[ "$(guard_ctl "$1" | jq -r '.code')" == ok ]]
 }
 
+# Kill the reaper's main process and wait up to 10 s for systemd to start a
+# new one. Prints {before, after, active}: the main PIDs and the unit state.
+reaper_restarts() {
+  local unit=eggomi-gv-reaper.service before after=0 deadline=$((SECONDS + 10))
+  before=$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)
+  if ((${before:-0} > 0)); then
+    kill -KILL "$before" 2>/dev/null || true
+    while ((SECONDS < deadline)); do
+      after=$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)
+      ((${after:-0} > 0 && after != before)) && break
+      sleep 0.2
+    done
+  fi
+  jq -n --argjson b "${before:-0}" --argjson a "${after:-0}" \
+    --arg s "$(systemctl is-active "$unit" 2>/dev/null || true)" '{before: $b, after: $a, active: $s}'
+}
+
 # guard_says CODE REQUEST: the guard answers REQUEST with CODE.
 guard_says() {
   [[ "$(guard_ctl "$2" | jq -r '.code')" == "$1" ]]
@@ -300,6 +317,12 @@ main() {
   cvm_sample all_stopped >/dev/null
   metric 'cvm_returned_bytes{via="all_roles_stopped"}' "$((cvm_idle - $(jq -r '.used' <<<"$(gvctl meminfo)")))"
 
+  # The reaper is supervised: killed, it comes back (eggomi-gv-reaper.service,
+  # Restart=always), so post-fill deadlines keep being enforced.
+  reaper_restarts >"$RUN_DIR/reaper.json"
+  check reaper_supervised jq_ok '.before > 0 and .after > 0 and .after != .before and .active == "active"' \
+    "$RUN_DIR/reaper.json"
+
   # The ARC cap is in force, and the ARC stayed under it at every sample
   # (64 MiB of slack: the ARC overshoots c_max briefly while it evicts).
   local arc arc_peak
@@ -328,11 +351,13 @@ main() {
     --slurpfile floor "$RUN_DIR/floor.json" \
     --slurpfile arc "$RUN_DIR/arc.json" \
     --slurpfile restore "$RUN_DIR/ckpt-restore.json" \
+    --slurpfile reaper "$RUN_DIR/reaper.json" \
     --rawfile metrics "$METRICS" \
     '{schema: "eggomi-s3-report/v1", environment: "L1-gvisor", runsc: $version, platform: "systrap",
       run: $run, ok: ($failures | length == 0), failures: $failures, keeper_probe: $probe[0],
       memory_reclaim: $reclaim[0], limits: $limits, chromium_sandbox: $chromium[0].chromium,
-      cvm_floor: $floor[0], zfs_arc: $arc[0], restore: $restore[0], metrics: $metrics}' >"$REPORT"
+      cvm_floor: $floor[0], zfs_arc: $arc[0], restore: $restore[0], reaper: $reaper[0],
+      metrics: $metrics}' >"$REPORT"
   log "metrics: $METRICS"
   if ((${#FAILURES[@]})); then
     die "s3 failed checks: ${FAILURES[*]}"

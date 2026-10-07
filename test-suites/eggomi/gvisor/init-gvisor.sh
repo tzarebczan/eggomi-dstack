@@ -25,7 +25,8 @@
 #   5. gv-ckpt (items 2 and 4), the checkpoint policy: restores remove
 #      containerd's staged copy in the same step, a browser is checkpointed
 #      for reuse only while pristine, and its reaper deletes post-fill images
-#      at their session's expiry. Installed to /run/eggomi/bin/gv-ckpt.
+#      at their session's expiry. Installed to /run/eggomi/bin/gv-ckpt; the
+#      reaper runs as eggomi-gv-reaper.service, Restart=always.
 #   6. A lab sshd on guest port 22 with the lab key. The dev image's rootfs
 #      and /root are read-only and its own sshd does not listen on TCP, so the
 #      key and an sshd config go on the writable /etc overlay.
@@ -164,8 +165,15 @@ eggomi_gv_ckpt() {
 __GV_CKPT_PY__
 EGGOMI_GV_CKPT_PY
   chmod 0700 "$bin.tmp" && mv "$bin.tmp" "$bin" || return 1
-  setsid "$bin" reap --loop 5 >/dev/kmsg 2>&1 </dev/null &
-  printf 'init-gvisor: gv-ckpt installed; reaper running\n' >&2
+  # The reaper is a transient systemd service that systemd restarts however
+  # it ends (a kill, the OOM killer), with no start-rate limit. No default
+  # dependencies and --no-block: this runs inside dstack-prepare, before
+  # basic.target, so waiting on the start job would deadlock the boot.
+  systemd-run --quiet --no-block --unit=eggomi-gv-reaper \
+    -p DefaultDependencies=no -p Restart=always -p RestartSec=1 \
+    -p StartLimitIntervalSec=0 -p StandardOutput=journal -p StandardError=journal \
+    "$bin" reap --loop 5 || return 1
+  printf 'init-gvisor: gv-ckpt installed; reaper supervised (eggomi-gv-reaper.service)\n' >&2
 }
 
 # Fail closed: no container runs without the floor and the checkpoint policy.

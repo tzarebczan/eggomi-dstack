@@ -238,6 +238,42 @@ class GvCkptTest(unittest.TestCase):
         self.assertFalse(raw.exists())
         self.assertTrue(self.image("pristine").exists())
 
+    def test_reap_keeps_state_when_dockerd_does_not_answer(self) -> None:
+        """Only a definite "No such container" drops a container's state."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("create", "--reuse", "--leave-running", "browser", "pristine")
+        state = self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")
+        self.assertTrue(state.exists())
+        os.environ["FAKE_DOCKER_DOWN"] = "1"
+        try:
+            rc, out = self.run_cmd("reap")
+        finally:
+            del os.environ["FAKE_DOCKER_DOWN"]
+        self.assertTrue(state.exists())
+        self.assertEqual((rc, out["docker_unanswered"]), (0, ["c0ffee" * 2]))
+        # dockerd is back: the pristine record still governs restores.
+        self.set_running("browser", False)
+        rc, out = self.run_cmd("restore", "browser", "pristine")
+        self.assertEqual((rc, out["kind"]), (0, "pristine"))
+        # A container that is really gone drops its state.
+        db = json.loads(self.db.read_text())
+        del db["containers"]["browser"]
+        self.db.write_text(json.dumps(db))
+        rc, out = self.run_cmd("reap")
+        self.assertEqual((rc, out["docker_unanswered"]), (0, []))
+        self.assertFalse(state.exists())
+
+    def test_a_docker_timeout_reads_as_unanswered(self) -> None:
+        """A hung docker call is not taken for a missing container."""
+        saved = gv_ckpt.DOCKER_TIMEOUT_SECONDS
+        gv_ckpt.DOCKER_TIMEOUT_SECONDS = 0.2
+        os.environ["FAKE_DOCKER_HANG"] = "5"
+        try:
+            self.assertIsNone(gv_ckpt.container_gone("c0ffee" * 10 + "abcd"))
+        finally:
+            gv_ckpt.DOCKER_TIMEOUT_SECONDS = saved
+            del os.environ["FAKE_DOCKER_HANG"]
+
     def test_reap_removes_stale_staged_copies(self) -> None:
         """A staged copy a raw restore left behind goes after a minute."""
         stale = self.tmp / "stage" / "ctrd-checkpoint-raw"
