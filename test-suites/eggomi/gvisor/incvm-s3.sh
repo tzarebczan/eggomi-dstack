@@ -89,6 +89,24 @@ guard_ok() {
   [[ "$(guard_ctl "$1" | jq -r '.code')" == ok ]]
 }
 
+# Make a second checkpoint of the running browser, drop the browser's
+# gv-ckpt record as a reboot would, and run one reap pass. Prints
+# {created, before, after, reap}: before/after are whether the two images
+# (s3 and orphan) exist.
+orphan_sweep() {
+  local cid created reap before after
+  cid=$(cid "$B")
+  created=$(gv_ckpt create --reuse --leave-running "$B" orphan)
+  before=$(jq -n --argjson a "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/s3" ]] && echo true || echo false)" \
+    --argjson b "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/orphan" ]] && echo true || echo false)" '[$a, $b]')
+  mv "/run/eggomi/gv-ckpt/$cid.json" "$RUN_DIR/gv-ckpt-record.json" 2>/dev/null || true
+  reap=$(gv_ckpt reap)
+  after=$(jq -n --argjson a "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/s3" ]] && echo true || echo false)" \
+    --argjson b "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/orphan" ]] && echo true || echo false)" '[$a, $b]')
+  jq -n --argjson c "$created" --argjson b "$before" --argjson a "$after" --argjson r "$reap" \
+    '{created: $c, before: $b, after: $a, reap: ($r | {code, reaped})}'
+}
+
 # Kill the reaper's main process and wait up to 10 s for systemd to start a
 # new one. Prints {before, after, active}: the main PIDs and the unit state.
 reaper_restarts() {
@@ -311,6 +329,13 @@ main() {
   metric 'keeper_probe_p50_ms' "$(jq -r '.p50_ms // "NaN"' "$RUN_DIR/probe-summary.json")"
   check keeper_probe_no_failures test "$(jq -r '.failures' "$RUN_DIR/probe-summary.json")" -eq 0
 
+  # A reboot clears /run (gv-ckpt's records) but not the data disk: every
+  # image left there is an orphan whose deadline is unknown. Simulated by
+  # moving the browser's record aside: one reap pass deletes its images.
+  orphan_sweep >"$RUN_DIR/orphans.json"
+  check reboot_orphans_reaped jq_ok '.created.code == "ok" and .before == [true, true]
+    and .after == [false, false] and .reap.code == "ok"' "$RUN_DIR/orphans.json"
+
   t=$(now); docker stop -t 10 "$B" >/dev/null; metric 'lifecycle_seconds{machine="restored",op="stop"}' "$(since "$t")"
   t=$(now); docker stop -t 10 "$G" >/dev/null; metric 'lifecycle_seconds{machine="guard",op="stop"}' "$(since "$t")"
   t=$(now); docker stop -t 10 "$K" >/dev/null; metric 'lifecycle_seconds{machine="keeper",op="stop"}' "$(since "$t")"
@@ -352,11 +377,13 @@ main() {
     --slurpfile arc "$RUN_DIR/arc.json" \
     --slurpfile restore "$RUN_DIR/ckpt-restore.json" \
     --slurpfile reaper "$RUN_DIR/reaper.json" \
+    --slurpfile orphans "$RUN_DIR/orphans.json" \
     --rawfile metrics "$METRICS" \
     '{schema: "eggomi-s3-report/v1", environment: "L1-gvisor", runsc: $version, platform: "systrap",
       run: $run, ok: ($failures | length == 0), failures: $failures, keeper_probe: $probe[0],
       memory_reclaim: $reclaim[0], limits: $limits, chromium_sandbox: $chromium[0].chromium,
       cvm_floor: $floor[0], zfs_arc: $arc[0], restore: $restore[0], reaper: $reaper[0],
+      reboot_orphans: $orphans[0],
       metrics: $metrics}' >"$REPORT"
   log "metrics: $METRICS"
   if ((${#FAILURES[@]})); then

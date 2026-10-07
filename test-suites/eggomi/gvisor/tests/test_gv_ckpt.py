@@ -274,6 +274,29 @@ class GvCkptTest(unittest.TestCase):
             gv_ckpt.DOCKER_TIMEOUT_SECONDS = saved
             del os.environ["FAKE_DOCKER_HANG"]
 
+    def test_reap_deletes_every_image_left_over_from_before_a_reboot(self) -> None:
+        """A cleared /run leaves images with no record; one pass deletes them."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("create", "--reuse", "--leave-running", "browser", "pristine")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 600_000))
+        self.run_cmd("create", "--leave-running", "browser", "suspend")
+        # An image of a container this boot never saw at all.
+        other = gv_ckpt.checkpoint_dir("f" * 64, "filled")
+        other.mkdir(parents=True)
+        (other / "pages.img").write_bytes(b"filled session")
+        # The reboot: tmpfs state is gone, the data disk is not.
+        for path in (self.tmp / "state").glob("*.json"):
+            path.unlink()
+        rc, out = self.run_cmd("reap")
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.image("suspend").exists())
+        self.assertFalse(self.image("pristine").exists())
+        self.assertFalse(other.exists())
+        self.assertEqual(
+            sorted(r["name"] for r in out["reaped"] if r.get("orphan")),
+            ["filled", "pristine", "suspend"],
+        )
+
     def test_reap_removes_stale_staged_copies(self) -> None:
         """A staged copy a raw restore left behind goes after a minute."""
         stale = self.tmp / "stage" / "ctrd-checkpoint-raw"

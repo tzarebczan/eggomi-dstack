@@ -24,9 +24,10 @@ Every browser checkpoint and restore goes through it:
     post-fill image past its deadline is deleted and refused, as is any
     image this tool did not create.
 ``reap [--loop SECONDS]``
-    Delete post-fill images whose deadline passed, any checkpoint of a
-    tracked browser that this tool did not record, and staged restore copies
-    that a restore outside this tool left behind.
+    Delete post-fill images whose deadline passed, any checkpoint this tool
+    did not record since boot (raw ones, and every image left over from
+    before a reboot), and staged restore copies that a restore outside this
+    tool left behind.
 
 Output is one JSON object on stdout. Exit 0 on success, 3 when the policy
 refuses, 1 on an error. Lab harness: test-suites/eggomi/gvisor/incvm-s*.sh.
@@ -368,7 +369,12 @@ def reap_once() -> Dict[str, Any]:
 
     A checkpoint of a tracked browser that this tool did not record was
     made outside the policy (a raw ``docker checkpoint create``), so its
-    contents are unknown: it is deleted too.
+    contents are unknown: it is deleted too. So is every checkpoint of a
+    container with no record at all. The records live in tmpfs, so after a
+    CVM reboot every image left on the data disk is such an orphan, and
+    its deadline is unknown: the first pass after boot deletes it. This runs
+    under the policy lock, like ``create``, so an image being written is
+    never taken for an orphan.
     """
     reaped: List[Dict[str, Any]] = []
     unknown: List[str] = []
@@ -408,6 +414,19 @@ def reap_once() -> Dict[str, Any]:
                     changed = True
         if changed:
             save(state)
+    tracked = {p.stem for p in STATE_DIR.glob("*.json")}
+    containers = DOCKER_ROOT / "containers"
+    for ckpts in (
+        sorted(containers.glob("*/checkpoints")) if containers.is_dir() else []
+    ):
+        cid = ckpts.parent.name
+        if cid in tracked or not ckpts.is_dir():
+            continue
+        for entry in sorted(ckpts.iterdir()):
+            gone = delete_checkpoint(cid, cid, entry.name)
+            reaped.append(
+                {"cid": cid[:12], "name": entry.name, "deleted": gone, "orphan": True}
+            )
     stale = 0
     for copy in staged_copies():
         with contextlib.suppress(OSError):
