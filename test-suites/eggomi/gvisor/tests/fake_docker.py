@@ -70,6 +70,7 @@ def main(argv: list) -> int:
             ROOT / "containers" / c["id"] / "checkpoints" / argv[3], ignore_errors=True
         )
     elif argv[:2] == ["start", "--checkpoint"]:
+        time.sleep(float(os.environ.get("FAKE_DOCKER_RESTORE_DELAY", "0")))
         c = find(argv[3])
         src = ROOT / "containers" / c["id"] / "checkpoints" / argv[2]
         if not src.is_dir():

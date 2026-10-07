@@ -382,6 +382,26 @@ def reap_once() -> Dict[str, Any]:
     return {"code": "ok", "reaped": reaped, "stale_stage_removed": stale}
 
 
+def after_deadline_check(out: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Reap once more before the lock is released.
+
+    A checkpoint or restore holds the lock for seconds, and a post-fill
+    deadline can pass meanwhile (the reaper waits on the lock). Whatever
+    expired, this step's own image included, is deleted before anyone else
+    can use it. A checkpoint whose own image expired that way is refused.
+    """
+    reaped = reap_once()["reaped"]
+    out["reaped"] = reaped
+    own = any(r["name"] == name and r["deleted"] for r in reaped)
+    if own and out.get("code") == "ok":
+        if "staged_copies_removed" in out:
+            # The browser is restored; its session is past its TTL.
+            out["image_deleted_at_deadline"] = True
+        else:
+            raise Refused("expired", detail="the session expired while checkpointing")
+    return out
+
+
 def next_deadline_s() -> Optional[float]:
     """Seconds until the nearest post-fill deadline, if any."""
     deadlines = []
@@ -450,8 +470,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 out = cmd_create(
                     args.container, args.name, args.reuse, args.leave_running
                 )
+                out = after_deadline_check(out, args.name)
             elif args.cmd == "restore":
                 out = cmd_restore(args.container, args.name)
+                out = after_deadline_check(out, args.name)
             elif args.cmd == "rm":
                 out = cmd_rm(args.container, args.name)
             elif args.cmd == "reap":

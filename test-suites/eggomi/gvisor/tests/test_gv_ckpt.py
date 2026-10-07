@@ -148,6 +148,20 @@ class GvCkptTest(unittest.TestCase):
         self.assertEqual((rc, out["code"], out["deleted"]), (3, "expired", True))
         self.assertFalse(self.image("suspend").exists())
 
+    def test_an_image_whose_deadline_passes_during_restore_is_deleted(self) -> None:
+        """The lock blocks the reaper, so restore reaps before releasing it."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        self.run_cmd("create", "--leave-running", "browser", "suspend")
+        self.set_running("browser", False)
+        os.environ["FAKE_DOCKER_RESTORE_DELAY"] = "0.5"
+        try:
+            rc, out = self.run_cmd("restore", "browser", "suspend")
+        finally:
+            del os.environ["FAKE_DOCKER_RESTORE_DELAY"]
+        self.assertEqual((rc, out["image_deleted_at_deadline"]), (0, True))
+        self.assertFalse(self.image("suspend").exists())
+
     def test_a_suspend_restored_before_expiry_keeps_the_deadline(self) -> None:
         """A post-fill suspend restores before expiry and stays post-fill."""
         self.run_cmd("arm", "browser")

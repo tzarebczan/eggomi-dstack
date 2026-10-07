@@ -337,45 +337,55 @@ booted without it. The suites no longer install anything of their own.
 inlined into the init script when gvisor-lab.sh renders it, and installed as
 `/run/eggomi/bin/gv-ckpt` (root only). Its state is in tmpfs, so `arm` also
 refuses a container that was created before the current boot. The reaper
-wakes at the next deadline, or every 5 s at the latest. A release's
+wakes at the next deadline, or every 5 s at the latest. A checkpoint or
+restore holds the policy lock for seconds, so each one reaps once more before
+it releases the lock: a deadline that passes meanwhile is enforced at once,
+on the step's own image too. A release's
 launcher calls `gv-ckpt` instead of `docker checkpoint` and `docker start
 --checkpoint`. A raw Docker checkpoint does not get past `restore`, which
 refuses images it did not record, and the reaper deletes any checkpoint of a
 tracked browser that it did not record. Host-only unit tests run against a fake
 docker CLI: `test-suites/eggomi/scripts/gvisor-unit-tests.sh`.
 
-Lab run on 2026-10-07. A fresh CVM, `eggomi-gvisor-780`, was booted with the
-hardened init script beside the standing lab CVM, which was left alone.
+Lab runs on 2026-10-07. A fresh CVM, `eggomi-gvisor-780`, was booted with
+the hardened init script beside the standing lab CVM, which was left alone.
+It was redeployed for each revision of the script: three runs, and the last
+one is on this PR's final code. Ranges below cover all three runs.
 
 - The boot log shows each step: `ZFS ARC capped at 388786688 bytes` and
   `gv-ckpt installed; reaper running`. `iptables -S` shows `-A INPUT -j
   EGGOMI-FLOOR` as the first rule, and the same chain exists under ip6tables.
-- S3' passed all 18 checks. These six are new: `cvm_floor_measured`,
-  `browser_armed_pristine`, `checkpoint_via_policy`,
-  `restore_staged_copy_seen`, `no_restore_residue`, and `zfs_arc_capped`.
-  Restore to ready took 2.29 s (`gv-ckpt restore` 1.83 s, cleanup included).
-  The browser checkpoint took 5.1 s, against 2.2 s before; the image now
-  goes through a smaller ARC.
+- S3' passed every check: 19/19 in the last two runs, 18/18 in the first,
+  before `browser_never_filled` was added. Seven checks are new:
+  `cvm_floor_measured`, `browser_armed_pristine`, `browser_never_filled`,
+  `checkpoint_via_policy`, `restore_staged_copy_seen`,
+  `no_restore_residue`, and `zfs_arc_capped`. Restore to ready took 2.13 to
+  2.29 s (`gv-ckpt restore` 1.78 to 1.83 s, cleanup included), and the
+  browser checkpoint 2.2 to 2.4 s. The first run's 5.1 s checkpoint was on a
+  cold CVM.
 - S4' passed: 14/14 cases, 9/9 boundary checks, and 8/8 policy checks.
-  Every leak search found 0 hits, and each positive control hit: canary 128,
-  filled token 6, secret on the keeper volume 1. After the fill, `create
-  --reuse` was refused (`not_pristine`) and wrote no image. Both restores
-  left no copy in `/tmp`; `gv-ckpt` had removed 155 MB and 144 MB. Both
-  post-fill images were gone 1.45 s after the session expired: the suite
-  first looks after its post-expiry redeem, so this is an upper bound. A
-  restore of the reaped image was refused (`unknown_checkpoint`), and the
-  pristine image restored and answered DevTools. The floor control behaved
-  as designed: with the hole open, the launcher connected to `:8090` and
-  `:22`; with it closed, both connections timed out, as did the browser's.
+  Every leak search found 0 hits, and each positive control hit: canary
+  128-133, filled token 6-7, secret on the keeper volume 1. After the fill,
+  `create --reuse` was refused (`not_pristine`) and wrote no image. Both
+  restores left no copy in `/tmp`; `gv-ckpt` removed 153-155 MB and
+  142-144 MB. Both post-fill images were gone 1.45 to 1.49 s after the
+  session expired. That is an upper bound: the suite first looks after its
+  post-expiry redeem. A restore of the reaped image was refused
+  (`unknown_checkpoint`), and the pristine image restored and answered
+  DevTools. The floor control behaved as designed: with the hole open, the
+  launcher connected to `:8090` and `:22`; with it closed, both connections
+  timed out, as did the browser's.
 - Negative control: the same suites, run on the standing lab CVM booted with
   the earlier init script, fail exactly the hardening checks. S3' fails the
-  six new checks. S4' fails all 8 policy checks (`gv-ckpt` is missing), and
-  two boundary checks: `cvm_floor_blocks_cvm_services`, and
+  six new checks it had then. S4' fails all 8 policy checks (`gv-ckpt` is
+  missing), and two boundary checks: `cvm_floor_blocks_cvm_services`, and
   `browser_cannot_connect_keeper`, because the browser now reaches the
   gateway's `:8090` and `:22`. The suites left that CVM as they found it.
-- With the cap, the ARC peaked at 393 MB, against 865 MB before. The CVM
-  used 1,052 MB idle and 1,435 MB active, against 1,453 and 1,837 MB before.
-  The host-side QEMU RSS peaked at 3.2 GB, against 4.0 GB.
+- With the cap of 389 MB, the ARC peaked at 393 to 410 MB, against 865 MB
+  before. The check allows 64 MiB of overshoot while the ARC evicts. The CVM
+  used 1,046 to 1,060 MB idle and 1,427 to 1,469 MB active, against 1,453
+  and 1,837 MB before. The host-side QEMU RSS peaked at 2.8 to 3.2 GB,
+  against 4.0 GB.
 
 ### Sizing
 
