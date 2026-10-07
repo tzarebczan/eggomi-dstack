@@ -93,7 +93,10 @@ public `verify` methods. The onboarded KMS must release the source's key.
 Every negative must be refused by the KMS, and the production gate must
 refuse every quote. If any check fails, nothing is written.
 `check_fixture_set` repeats the keeper-side checks on a set read back from
-disk.
+disk, including that each named release is the app, nonce, and issuing
+domain its name says. With `EGGOMI_KMS_FIXTURES_BIN` (a prebuilt binary),
+the script records the binary's path as `prebuilt_binary` and leaves
+`source_sha` null, since it cannot know that binary's commit.
 
 Schema `snp-sim-kms-fixtures/v2`. Each `record`, `receipt`, `evidence`, and
 v2 `bootstrap`/`onboard` value is the exact `serde_json` string the crate

@@ -262,14 +262,35 @@ pub fn check_fixture_set(set: &Value) -> Result<()> {
     let onboard: AttestedOnboardReceipt = serde_json::from_str(field(&["v2", "onboard"])?)?;
     onboard.verify(ark, &FIXTURE_MEASUREMENT)?;
     ensure!(onboard.k256_public == bootstrap.k256_public);
-    for name in ["app_a", "app_b", "app_a_onboarded"] {
+    // Each named release must be the one its name says: app, nonce, and
+    // issuing domain, so swapped or relabelled entries are refused.
+    let mut keys = Vec::new();
+    for (name, app, nonce, domain) in [
+        ("app_a", APP_A, NONCE_A, SOURCE_DOMAIN),
+        ("app_b", APP_B, NONCE_B, SOURCE_DOMAIN),
+        ("app_a_onboarded", APP_A, NONCE_ONBOARDED, TARGET_DOMAIN),
+    ] {
         let release: SignedAppKeyRelease =
             serde_json::from_str(field(&["v2", "releases", name, "record"])?)?;
         release
             .verify(&bootstrap.k256_public)
             .with_context(|| format!("v2.releases.{name}"))?;
-        ensure!(hex::encode(&release.nonce) == field(&["v2", "releases", name, "nonce"])?);
+        ensure!(
+            release.app_id == app && release.nonce == nonce && release.kms_domain == domain,
+            "v2.releases.{name} is not the release its name says"
+        );
+        ensure!(
+            field(&["v2", "releases", name, "app_id"])? == hex::encode(app)
+                && field(&["v2", "releases", name, "nonce"])? == hex::encode(nonce),
+            "v2.releases.{name} labels do not match its record"
+        );
+        keys.push(release.key);
     }
+    ensure!(
+        keys[0] == keys[2],
+        "the onboarded kms released a different key"
+    );
+    ensure!(onboard.domain == TARGET_DOMAIN && onboard.source_domain == SOURCE_DOMAIN);
     Ok(())
 }
 
@@ -313,6 +334,16 @@ mod tests {
         let mut release: SignedAppKeyRelease = serde_json::from_str(&record).unwrap();
         release.nonce = NONCE_STALE.to_vec();
         set["v2"]["releases"]["app_b"]["record"] = json!(serde_json::to_string(&release).unwrap());
+        assert!(check_fixture_set(&set).is_err());
+    }
+
+    #[test]
+    fn swapped_fixture_entries_are_refused() {
+        let mut set = fixture_set([0x11; 32]).unwrap();
+        let a = set["v2"]["releases"]["app_a"].clone();
+        let b = set["v2"]["releases"]["app_b"].clone();
+        set["v2"]["releases"]["app_a"] = b;
+        set["v2"]["releases"]["app_b"] = a;
         assert!(check_fixture_set(&set).is_err());
     }
 

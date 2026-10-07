@@ -13,7 +13,9 @@
 #   EGGOMI_KMS_FIXTURE_SEED  32-byte hex mock-attestation seed (default 0x11
 #                            x 32, the crate tests' seed). It derives only the
 #                            mock ARK, ASK, and VCEK keys.
-#   EGGOMI_KMS_FIXTURES_BIN  use this snp-sim-kms instead of building one
+#   EGGOMI_KMS_FIXTURES_BIN  use this snp-sim-kms instead of building one. Its
+#                            commit is unknown, so source_sha is null and the
+#                            path goes in provenance.prebuilt_binary.
 #   CARGO_TARGET_DIR         cargo's target directory (default dstack/target)
 set -euo pipefail
 
@@ -30,14 +32,22 @@ mkdir -p "$(dirname "$OUT")"
 tmp=$(mktemp "$OUT.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 "$BIN" fixtures --seed "$SEED" --out "$tmp"
-sha=$(git -C "$ROOT" rev-parse HEAD)
-dirty=false
-if [[ -n "$(git -C "$ROOT" status --porcelain -- dstack/crates/snp-sim-kms dstack/crates/mock-attestation)" ]]; then
-  dirty=true
+# The commit is known only for a binary built here from this checkout. A
+# binary passed in is recorded as such, with no commit attributed to it.
+sha=null dirty=null binary=null
+if [[ -z "${EGGOMI_KMS_FIXTURES_BIN:-}" ]]; then
+  sha=$(git -C "$ROOT" rev-parse HEAD | jq -R .)
+  dirty=false
+  if [[ -n "$(git -C "$ROOT" status --porcelain -- dstack/crates/snp-sim-kms dstack/crates/mock-attestation)" ]]; then
+    dirty=true
+  fi
+else
+  binary=$(jq -Rn --arg b "$BIN" '$b')
 fi
-jq -e --arg sha "$sha" --argjson dirty "$dirty" \
+jq -e --argjson sha "$sha" --argjson dirty "$dirty" --argjson binary "$binary" \
   'select(.schema == "snp-sim-kms-fixtures/v2")
    | .provenance += {source_repo: "tzarebczan/eggomi-dstack", source_sha: $sha, source_dirty: $dirty,
-                     target: "test-suites/eggomi/scripts/kms-fixtures.sh"}' "$tmp" >"$OUT.new"
+                     prebuilt_binary: $binary, target: "test-suites/eggomi/scripts/kms-fixtures.sh"}' \
+  "$tmp" >"$OUT.new"
 mv "$OUT.new" "$OUT"
-printf 'kms-fixtures: wrote %s (source %s%s)\n' "$OUT" "${sha:0:8}" "$([[ $dirty == true ]] && echo ', dirty')" >&2
+printf 'kms-fixtures: wrote %s (source %s)\n' "$OUT" "$(jq -r '.provenance | if .source_sha then .source_sha[0:8] + (if .source_dirty then ", dirty" else "" end) else "prebuilt " + .prebuilt_binary end' "$OUT")" >&2
