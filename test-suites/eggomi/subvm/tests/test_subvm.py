@@ -63,7 +63,9 @@ class KeeperChannelTest(unittest.TestCase):
             except OSError:
                 return
             threading.Thread(
-                target=keeper_svc.serve_connection, args=(self.keeper, conn), daemon=True
+                target=keeper_svc.serve_connection,
+                args=(self.keeper, conn),
+                daemon=True,
             ).start()
 
     def test_guard_key_leaves_tmpfs_and_only_a_wrap_reaches_disk(self) -> None:
@@ -75,8 +77,15 @@ class KeeperChannelTest(unittest.TestCase):
     def test_session_is_minted_opened_redeemed_once(self) -> None:
         """A session opens once and redeems once."""
         out = self.guard.session(PURPOSE, 5000, 0, True, 0)
-        self.assertEqual(out, {"mint": "ok", "grant_ref": out["grant_ref"],
-                               "accept": "filled", "redeem": "ok"})
+        self.assertEqual(
+            out,
+            {
+                "mint": "ok",
+                "grant_ref": out["grant_ref"],
+                "accept": "filled",
+                "redeem": "ok",
+            },
+        )
         token = self.guard.held["token"]
         self.assertEqual(len(token), 64)
         self.assertNotIn(SECRET.decode(), token)
@@ -107,14 +116,20 @@ class KeeperChannelTest(unittest.TestCase):
 
     def test_deny_by_default(self) -> None:
         """Unknown methods, keys, purposes, and long TTLs are refused."""
-        self.assertEqual(self.guard.raw("GetSecret", {}, False)["code"], "denied_method")
-        self.assertEqual(self.guard.raw("ListConnections", {}, False)["code"], "denied_method")
+        self.assertEqual(
+            self.guard.raw("GetSecret", {}, False)["code"], "denied_method"
+        )
+        self.assertEqual(
+            self.guard.raw("ListConnections", {}, False)["code"], "denied_method"
+        )
         self.assertEqual(self.guard.raw("Ping", {}, True)["code"], "handshake_refused")
         self.assertEqual(
             self.guard.session("https://evil.example", 1000, 0, False, 0)["mint"],
             "denied_purpose",
         )
-        self.assertEqual(self.guard.session(PURPOSE, 30_001, 0, False, 0)["mint"], "denied_ttl")
+        self.assertEqual(
+            self.guard.session(PURPOSE, 30_001, 0, False, 0)["mint"], "denied_ttl"
+        )
 
     def test_probe_may_only_ping(self) -> None:
         """The probe role has Ping and nothing else."""
@@ -136,8 +151,12 @@ class KeeperChannelTest(unittest.TestCase):
         reply = self.keeper.handle(
             "browser",
             "MintSession",
-            {"purpose": PURPOSE, "ttl_ms": 1000, "challenge": "11" * 32,
-             "operation_id": "op"},
+            {
+                "purpose": PURPOSE,
+                "ttl_ms": 1000,
+                "challenge": "11" * 32,
+                "operation_id": "op",
+            },
         )
         blob = json.dumps(reply).encode()
         for form in host_tools.encodings(SECRET).values():
@@ -182,13 +201,22 @@ class ScannerTest(unittest.TestCase):
     def test_checkpoint_container(self) -> None:
         """A secret inside a checkpoint payload is found."""
         payload = subprocess.run(
-            ["zstd", "-q", "-c"], input=b"\0" * 4096 + SECRET + b"\0" * 4096,
-            stdout=subprocess.PIPE, check=True,
+            ["zstd", "-q", "-c"],
+            input=b"\0" * 4096 + SECRET + b"\0" * 4096,
+            stdout=subprocess.PIPE,
+            check=True,
         ).stdout
         manifest = json.dumps({"checkpoint": {"version": 4}}).encode()
         footer = struct.pack(
-            "<8sIQQQQQI", b"SMOLPACK", 1, 0, 0, len(payload), len(payload),
-            len(manifest), 0,
+            "<8sIQQQQQI",
+            b"SMOLPACK",
+            1,
+            0,
+            0,
+            len(payload),
+            len(payload),
+            len(manifest),
+            0,
         ).ljust(64, b"\0")
         path = self.tmp / "vm.checkpoint"
         path.write_bytes(payload + manifest + footer)
@@ -201,10 +229,15 @@ class ScannerTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("zstd"), "zstd is not installed")
     def test_checkpoint_frames_and_truncation(self) -> None:
         """Every frame is decoded; a truncated frame raises instead of passing."""
-        first = subprocess.run(["zstd", "-q", "-c"], input=b"a" * 100,
-                               stdout=subprocess.PIPE, check=True).stdout
-        second = subprocess.run(["zstd", "-q", "-c"], input=b"\0" * 64 + SECRET,
-                                stdout=subprocess.PIPE, check=True).stdout
+        first = subprocess.run(
+            ["zstd", "-q", "-c"], input=b"a" * 100, stdout=subprocess.PIPE, check=True
+        ).stdout
+        second = subprocess.run(
+            ["zstd", "-q", "-c"],
+            input=b"\0" * 64 + SECRET,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout
         path = self._container(first + second)
         found = host_tools.scan(SECRET, [path])["files_with_hits"][str(path)]
         self.assertEqual(found["decoded"]["raw"], 1)
@@ -226,16 +259,34 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(result["files_scanned"], 1)
         self.assertEqual(result["hits"]["raw"], 1)
 
-    @unittest.skipUnless(shutil.which("qemu-img") and shutil.which("qemu-io"),
-                         "qemu-img and qemu-io are not installed")
+    @unittest.skipUnless(
+        shutil.which("qemu-img") and shutil.which("qemu-io"),
+        "qemu-img and qemu-io are not installed",
+    )
     def test_qcow2_logical_view_and_backing_chain(self) -> None:
         """A secret split across non-adjacent clusters, or in a backing file, is found."""
         base = self.tmp / "base.qcow2"
         top = self.tmp / "top.qcow2"
         cluster = 65536
-        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", str(base), "4M"], check=True)
-        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", "base.qcow2",
-                        "-F", "qcow2", str(top)], check=True, cwd=self.tmp)
+        subprocess.run(
+            ["qemu-img", "create", "-q", "-f", "qcow2", str(base), "4M"], check=True
+        )
+        subprocess.run(
+            [
+                "qemu-img",
+                "create",
+                "-q",
+                "-f",
+                "qcow2",
+                "-b",
+                "base.qcow2",
+                "-F",
+                "qcow2",
+                str(top),
+            ],
+            check=True,
+            cwd=self.tmp,
+        )
         half = len(SECRET) // 2
         head, tail = SECRET[:half], SECRET[half:]
         (self.tmp / "head").write_bytes(head)
@@ -249,9 +300,17 @@ class ScannerTest(unittest.TestCase):
         ):
             source = self.tmp / src
             subprocess.run(
-                ["qemu-io", "-f", "qcow2", "-c",
-                 f"write -s {source} {offset} {source.stat().st_size}", str(image)],
-                check=True, stdout=subprocess.DEVNULL)
+                [
+                    "qemu-io",
+                    "-f",
+                    "qcow2",
+                    "-c",
+                    f"write -s {source} {offset} {source.stat().st_size}",
+                    str(image),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
         image = host_tools.Qcow2(top)
         try:
             logical = b"".join(c for c in image.chunks() if c != b"\0")
@@ -264,8 +323,10 @@ class ScannerTest(unittest.TestCase):
         logical_hits = result["files_with_hits"][str(top)]["logical"]["raw"]
         self.assertEqual(logical_hits, 2)  # the split copy and the backing copy
         packed = self.tmp / "packed.qcow2"
-        subprocess.run(["qemu-img", "convert", "-q", "-c", "-O", "qcow2", str(top),
-                        str(packed)], check=True)
+        subprocess.run(
+            ["qemu-img", "convert", "-q", "-c", "-O", "qcow2", str(top), str(packed)],
+            check=True,
+        )
         self.assertNotIn(SECRET, packed.read_bytes())
         packed_hits = host_tools.scan(SECRET, [packed])["files_with_hits"][str(packed)]
         self.assertEqual(packed_hits["logical"]["raw"], 2)  # compressed clusters
@@ -274,8 +335,15 @@ class ScannerTest(unittest.TestCase):
     def _container(self, payload: bytes) -> Path:
         manifest = json.dumps({"checkpoint": {"version": 4}}).encode()
         footer = struct.pack(
-            "<8sIQQQQQI", b"SMOLPACK", 1, 0, 0, len(payload), len(payload),
-            len(manifest), 0,
+            "<8sIQQQQQI",
+            b"SMOLPACK",
+            1,
+            0,
+            0,
+            len(payload),
+            len(payload),
+            len(manifest),
+            0,
         ).ljust(64, b"\0")
         path = self.tmp / f"vm-{len(payload)}.checkpoint"
         path.write_bytes(payload + manifest + footer)

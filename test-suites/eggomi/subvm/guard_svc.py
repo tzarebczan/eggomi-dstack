@@ -79,7 +79,9 @@ class Guard:
 
     def _call(self, method: str, params: Dict[str, Any], key: Optional[bytes] = None):
         try:
-            reply = call(self.keeper, key or self._private, self.keeper_public, method, params)
+            reply = call(
+                self.keeper, key or self._private, self.keeper_public, method, params
+            )
         except GateDenial as exc:
             return {"error": {"code": exc.code}}
         except ChannelError:
@@ -97,7 +99,12 @@ class Guard:
         return {"code": reply["error"]["code"]}
 
     def session(
-        self, purpose: str, ttl_ms: int, accept_delay_ms: int, redeem: bool, redeem_delay_ms: int
+        self,
+        purpose: str,
+        ttl_ms: int,
+        accept_delay_ms: int,
+        redeem: bool,
+        redeem_delay_ms: int,
     ) -> Dict[str, Any]:
         """Mint, open, and optionally redeem one session."""
         if not self.keeper_epoch:
@@ -158,7 +165,9 @@ class Guard:
             held = dict(self.held) if self.held else None
         if held is None:
             return {"code": "nothing_held"}
-        reply = self._call("Redeem", {"grant_ref": held["grant_ref"], "token": held["token"]})
+        reply = self._call(
+            "Redeem", {"grant_ref": held["grant_ref"], "token": held["token"]}
+        )
         if "error" in reply:
             return {"code": reply["error"]["code"]}
         return {"code": "ok"}
@@ -168,10 +177,15 @@ class Guard:
         if self.last_blob is None or self.last_live is None:
             return {"code": "nothing_held"}
         accepted = self.store.accept(self.last_blob, self.last_live)
-        return {"code": accepted["code"], "repeat": bool(accepted.get("repeat")),
-                "plaintext_returned": "fill" in accepted}
+        return {
+            "code": accepted["code"],
+            "repeat": bool(accepted.get("repeat")),
+            "plaintext_returned": "fill" in accepted,
+        }
 
-    def raw(self, method: str, params: Dict[str, Any], stranger: bool) -> Dict[str, Any]:
+    def raw(
+        self, method: str, params: Dict[str, Any], stranger: bool
+    ) -> Dict[str, Any]:
         """Call any method, optionally with an unregistered key."""
         key = generate_private() if stranger else None
         reply = self._call(method, params, key)

@@ -275,7 +275,9 @@ def checkpoint_payload(handle: BinaryIO) -> Iterator[bytes]:
                     raise ValueError("checkpoint payload ends inside a zstd frame")
                 data = handle.read(min(CHUNK, remaining))
                 if not data:
-                    raise ValueError("checkpoint payload is shorter than its footer says")
+                    raise ValueError(
+                        "checkpoint payload is shorter than its footer says"
+                    )
                 remaining -= len(data)
             out = decompressor.decompress(data, max_length=CHUNK)
             data = b""
@@ -327,8 +329,17 @@ class Qcow2:
         self.path = path
         self.handle = path.open("rb")
         header = self.handle.read(112)
-        (magic, version, backing_offset, backing_size, cluster_bits, size,
-         crypt, l1_size, l1_offset) = struct.unpack(">4sIQIIQIIQ", header[:48])
+        (
+            magic,
+            version,
+            backing_offset,
+            backing_size,
+            cluster_bits,
+            size,
+            crypt,
+            l1_size,
+            l1_offset,
+        ) = struct.unpack(">4sIQIIQIIQ", header[:48])
         if magic != QCOW2_MAGIC:
             raise ValueError(f"{path} is not qcow2")
         if crypt:
@@ -337,7 +348,9 @@ class Qcow2:
         if version >= 3:
             incompatible = struct.unpack(">Q", header[72:80])[0]
             if incompatible & ~0b11:  # only dirty and corrupt are understood
-                raise ValueError(f"{path}: unsupported qcow2 features {incompatible:#x}")
+                raise ValueError(
+                    f"{path}: unsupported qcow2 features {incompatible:#x}"
+                )
             header_length = struct.unpack(">I", header[100:104])[0]
             if header_length > 104:
                 self.compression = header[104]
@@ -355,7 +368,9 @@ class Qcow2:
             backing_path = (path.parent / name).resolve()
             with backing_path.open("rb") as probe:
                 is_qcow2 = probe.read(4) == QCOW2_MAGIC
-            self.backing = Qcow2(backing_path, depth + 1) if is_qcow2 else RawImage(backing_path)
+            self.backing = (
+                Qcow2(backing_path, depth + 1) if is_qcow2 else RawImage(backing_path)
+            )
 
     def close(self) -> None:
         """Close this image and its backing chain."""
@@ -373,7 +388,9 @@ class Qcow2:
         table = self._l2_cache.get(offset)
         if table is None:
             self.handle.seek(offset)
-            table = struct.unpack(f">{self.l2_entries}Q", self.handle.read(self.cluster_size))
+            table = struct.unpack(
+                f">{self.l2_entries}Q", self.handle.read(self.cluster_size)
+            )
             self._l2_cache = {offset: table}
         return table
 

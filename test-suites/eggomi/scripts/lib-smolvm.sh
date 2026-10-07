@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -30,6 +31,8 @@ KEEPER_PORT=${EGGOMI_KEEPER_PORT:-47011}
 GATEWAY=${EGGOMI_SMOLVM_GATEWAY:-100.96.0.1}
 KEEPER_APK="python3 py3-cryptography"
 BROWSER_APK="chromium font-dejavu python3 py3-cryptography"
+# The keeper policy's allowed purpose; used by S4.
+# shellcheck disable=SC2034
 PURPOSE="https://login.example.test"
 RUN_ID=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 MACHINES=()
@@ -270,6 +273,7 @@ guest_used_bytes() {
     printf '%s\n' "$used"
     return
   fi
+  # shellcheck disable=SC2016 # awk's own $2, expanded in the guest
   sv machine exec --name "$1" -- awk \
     '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {printf "%d\n", (t - a) * 1024}' \
     /proc/meminfo
