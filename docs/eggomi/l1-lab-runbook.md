@@ -178,6 +178,9 @@ inner-isolation choice is pending a founder decision:
 4. smolvm only on the non-confidential local or desktop computer, where no
    SNP boundary is claimed.
 
+Option 2 with gVisor is measured in this lab, in its own CVM: see
+[inner-isolation-gvisor.md](inner-isolation-gvisor.md).
+
 ## Stop and teardown
 
 ```bash

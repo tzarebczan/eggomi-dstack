@@ -206,6 +206,27 @@ founder decision (see [ARCHITECTURE](../../docs/eggomi/ARCHITECTURE.md#inner-iso
 Host-native smolvm (L2) remains the baseline for the non-confidential local
 computer only.
 
+## Run S3' and S4' (gVisor inside the CVM)
+
+The recommended inner isolation, one gVisor sandbox per role inside one CVM,
+has its own suites. `scripts/gvisor-lab.sh` deploys a separate lab CVM whose
+`init_script` registers runsc (systrap) with dockerd and starts a lab sshd;
+`s3-gvisor.sh` and `s4-gvisor.sh` run keeper, guard, and browser there, each
+in its own sandbox and cgroup. Both exit 77 when that CVM is missing.
+
+```bash
+. "$EGGOMI_LAB_DIR/env.sh"
+./test-suites/eggomi/scripts/gvisor-lab.sh fetch    # gVisor release bundle, 167 MB, SHA-512 pinned
+./test-suites/eggomi/scripts/gvisor-lab.sh serve
+./test-suites/eggomi/scripts/gvisor-lab.sh deploy
+./test-suites/eggomi/scripts/gvisor-lab.sh wait
+./test-suites/eggomi/scripts/s3-gvisor.sh
+./test-suites/eggomi/scripts/s4-gvisor.sh
+```
+
+Results and the comparison with smolvm are in
+[docs/eggomi/inner-isolation-gvisor.md](../../docs/eggomi/inner-isolation-gvisor.md).
+
 Delete `.state/` between CI jobs or whenever rotating the mock seed. Never
 copy these roots or seeds into a production KMS, verifier, image, or secret
 workflow.

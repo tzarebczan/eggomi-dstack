@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+# Keeper, guard, and launcher-probe base for the L1 gVisor lab. The harness
+# code is bind-mounted read-only per run.
+FROM alpine:3.22
+RUN apk add --no-cache python3 py3-cryptography \
+ && adduser -D -u 10002 keeper && adduser -D -u 10003 guard
