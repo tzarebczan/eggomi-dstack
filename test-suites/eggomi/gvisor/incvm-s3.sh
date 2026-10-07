@@ -89,6 +89,11 @@ guard_ok() {
   [[ "$(guard_ctl "$1" | jq -r '.code')" == ok ]]
 }
 
+# guard_says CODE REQUEST: the guard answers REQUEST with CODE.
+guard_says() {
+  [[ "$(guard_ctl "$2" | jq -r '.code')" == "$1" ]]
+}
+
 chromium_sandboxed() {
   docker exec -i -u 0 "$B" python3 /opt/eggomi/boundary_probe.py <<<'{"chromium": true}' \
     >"$RUN_DIR/chromium-sandbox.json"
@@ -212,9 +217,13 @@ main() {
   sleep 1
   probe_t0=$(date +%s.%N)
 
-  # No fill happens in S3, so the browser is pristine and its checkpoint may
-  # be kept for reuse. Without gv-ckpt the check fails and the raw Docker
-  # checkpoint keeps the measurements going.
+  # No fill happens in S3: the guard's `session` command mints, accepts, and
+  # redeems at the guard, and only its `fill` command writes into a page,
+  # which S3 never sends. So the browser is pristine and its checkpoint may
+  # be kept for reuse; browser_never_filled confirms no page holds a fill.
+  # Without gv-ckpt the policy check fails and the raw Docker checkpoint
+  # keeps the measurements going.
+  check browser_never_filled guard_says nothing_filled '{"cmd":"page_fill_matches"}'
   t=$(now)
   gv_ckpt create --reuse --leave-running "$B" s3 >"$RUN_DIR/ckpt-create.json"
   check checkpoint_via_policy jq_ok '.code == "ok" and .kind == "pristine"' "$RUN_DIR/ckpt-create.json"
