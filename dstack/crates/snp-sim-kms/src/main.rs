@@ -85,7 +85,8 @@ enum Command {
         #[arg(long)]
         nonce: String,
     },
-    /// Write keeper-side fixtures for every KMS output, v1 and v2.
+    /// Write the checked keeper-side fixture set: every KMS output, v1 and
+    /// v2, with its evidence, and the vectors the KMS must refuse.
     Fixtures {
         #[command(flatten)]
         seed: SeedArgs,
@@ -384,45 +385,15 @@ fn verify_release(
 }
 
 fn fixtures(seed: &SeedArgs, out: &Path) -> Result<()> {
-    const MEASUREMENT: [u8; 48] = [0x33; 48];
-    const APP_ID: &[u8] = b"eggomi-lab-app";
-    const NONCE: [u8; 32] = [0x5a; 32];
-    let tsm = SimTsm::from_seed(load_seed(seed)?)?;
-    let mut source = LabSnpKms::enroll(tsm.ark_pem(), MEASUREMENT, true);
-    let bootstrap_v1 = source.bootstrap(&tsm, "kms.lab.example")?;
-    let mut target = LabSnpKms::enroll(tsm.ark_pem(), MEASUREMENT, true);
-    let onboard = target.onboard_from_attested(&tsm, &source, "kms-2.lab.example")?;
-    let release_quote = tsm.quote(app_release_report_data(APP_ID, &NONCE), MEASUREMENT)?;
-    let release = source.release_signed(APP_ID, &NONCE, &release_quote)?;
-    let release_v1_quote = tsm.quote(app_report_data(APP_ID), MEASUREMENT)?;
-    let release_v1 = source.release_app_key(APP_ID, &release_v1_quote)?;
-    let bootstrap = source
-        .bootstrap_attestation()
-        .context("kms has not been bootstrapped")?;
-    // Each record is kept as the exact serde_json string the crate emits, so
-    // a keeper can compare byte for byte.
-    let fixture = json!({
-        "provenance": {
-            "crate": "snp-sim-kms",
-            "version": env!("CARGO_PKG_VERSION"),
-            "command": "snp-sim-kms fixtures",
-            "lab_only": true,
-        },
-        "ark_pem": tsm.ark_pem(),
-        "measurement": hex::encode(MEASUREMENT),
-        "app_id": hex::encode(APP_ID),
-        "nonce": hex::encode(NONCE),
-        "bootstrap": serde_json::to_string(&bootstrap)?,
-        "bootstrap_receipt_v1": serde_json::to_string(&bootstrap_v1)?,
-        "onboard": serde_json::to_string(&onboard)?,
-        "release": serde_json::to_string(&release)?,
-        "release_quote": serde_json::to_string(&release_quote)?,
-        "release_v1": serde_json::to_string(&release_v1)?,
-        "release_v1_quote": serde_json::to_string(&release_v1_quote)?,
-    });
-    std::fs::write(out, serde_json::to_string_pretty(&fixture)? + "\n")
+    // fixture_set checks every output before it returns; a set that fails a
+    // check is never written.
+    let set = snp_sim_kms::fixtures::fixture_set(load_seed(seed)?)?;
+    std::fs::write(out, serde_json::to_string_pretty(&set)? + "\n")
         .with_context(|| format!("failed to write {}", out.display()))?;
-    eprintln!("snp-sim-kms: wrote lab fixtures to {}", out.display());
+    eprintln!(
+        "snp-sim-kms: wrote checked lab fixtures to {}",
+        out.display()
+    );
     Ok(())
 }
 

@@ -29,6 +29,8 @@ use serde::{Deserialize, Serialize, Serializer};
 use sev_snp_qvl::{AmdKdsClient, QuoteVerifier};
 use sha2::{Digest, Sha256};
 
+pub mod fixtures;
+
 const MEASUREMENT_LEN: usize = 48;
 const REPORT_DATA_LEN: usize = 64;
 const LAB_KDF_SALT: &[u8] = b"lab-snp-sim-kms/v1";
