@@ -52,7 +52,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 STATE_DIR = Path(os.environ.get("EGGOMI_GV_CKPT_STATE", "/run/eggomi/gv-ckpt"))
 DOCKER = os.environ.get("EGGOMI_GV_CKPT_DOCKER", "docker")
@@ -161,25 +161,11 @@ def inspect(ctr: str) -> Dict[str, Any]:
 
 
 @contextlib.contextmanager
-def locked(while_waiting: Optional[Callable[[], None]] = None) -> Iterator[None]:
-    """Serialise every policy step, so a fill cannot land mid-checkpoint.
-
-    ``while_waiting`` runs every DEADLINE_POLL_SECONDS until the lock is
-    free: the reaper's deadline pass, which needs no lock, so a step that
-    holds the lock while dockerd hangs does not hold back a deadline.
-    """
+def locked() -> Iterator[None]:
+    """Serialise every policy step, so a fill cannot land mid-checkpoint."""
     STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(STATE_DIR / ".lock", "a") as handle:
-        if while_waiting is None:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-        else:
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    while_waiting()
-                    time.sleep(DEADLINE_POLL_SECONDS)
+        fcntl.flock(handle, fcntl.LOCK_EX)
         yield
 
 
@@ -259,13 +245,32 @@ def expire_on_disk(now: Optional[int] = None) -> List[Dict[str, Any]]:
             if record["deadline_ms"] > now or not NAME_RE.match(name):
                 continue
             target = checkpoint_dir(cid, name)
-            if not target.exists():
+            if not target.exists() or not still_expired(path, name, record, now):
                 continue
             shutil.rmtree(target, ignore_errors=True)
             reaped.append(
                 {"cid": cid[:12], "name": name, "deleted": not target.exists()}
             )
     return reaped
+
+
+def still_expired(path: Path, name: str, record: Dict[str, Any], now: int) -> bool:
+    """Reread the record just before a lockless deletion.
+
+    The pass holds no lock, so between its read and the deletion an ``rm``
+    and a new ``create`` may reuse the name for a fresh image: that one has
+    another ``created_ms`` (and deadline), and is left alone.
+    """
+    try:
+        current = json.loads(path.read_text("utf-8"))["checkpoints"].get(name)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return (
+        current is not None
+        and current.get("created_ms") == record.get("created_ms")
+        and current.get("deadline_ms") is not None
+        and current["deadline_ms"] <= now
+    )
 
 
 def check_name(name: str) -> None:
@@ -352,9 +357,12 @@ def cmd_create(ctr: str, name: str, reuse: bool, leave_running: bool) -> Dict[st
     # it. The policy is set aside until the restore puts it back.
     if not leave_running and info["restart"] != "no":
         record["restart"] = info["restart"]
-        docker("update", "--restart=no", ctr)
+    # Saved before the policy changes, so a create killed after it leaves a
+    # record from which the reaper restores the policy.
     state["checkpoints"][name] = record
     save(state)
+    if "restart" in record:
+        docker("update", "--restart=no", ctr)
     start = time.monotonic()
     proc = docker(*args, check=False)
     if proc.returncode != 0:
@@ -486,8 +494,11 @@ def reap_once() -> Dict[str, Any]:
             if record.get("pending"):
                 # This runs under the lock, so no create is in flight: a
                 # pending record is one whose create died. Its image, if any,
-                # is incomplete and unaccounted for.
+                # is incomplete and unaccounted for, and the restart policy
+                # it set aside goes back.
                 shutil.rmtree(checkpoint_dir(cid, name), ignore_errors=True)
+                if record.get("restart"):
+                    docker("update", f"--restart={record['restart']}", cid, check=False)
                 reaped.append(
                     {"cid": cid[:12], "name": name, "deleted": True, "incomplete": True}
                 )
@@ -607,6 +618,16 @@ def expire_and_report() -> None:
         print(json.dumps({"code": "ok", "reaped": reaped}), flush=True)
 
 
+def expiry_watch(stop: threading.Event) -> None:
+    """Run the lockless deadline pass every DEADLINE_POLL_SECONDS until stopped."""
+    while not stop.is_set():
+        try:
+            expire_and_report()
+        except Exception as exc:  # noqa: BLE001 - the watch must keep running
+            print(json.dumps({"code": "error", "message": str(exc)[:400]}), flush=True)
+        stop.wait(DEADLINE_POLL_SECONDS)
+
+
 def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
     """Reap until killed: at each deadline, and every INTERVAL otherwise.
 
@@ -615,10 +636,14 @@ def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
     ``stop`` ends the loop (tests); the CVM's reaper runs until killed.
     """
     stop = stop or threading.Event()
+    # Deadlines on their own thread: the reap pass below makes docker calls
+    # that can each hang for DOCKER_TIMEOUT_SECONDS, and neither those nor a
+    # step holding the lock may hold back a deadline.
+    watch = threading.Thread(target=expiry_watch, args=(stop,), daemon=True)
+    watch.start()
     while not stop.is_set():
         try:
-            expire_and_report()
-            with locked(while_waiting=expire_and_report):
+            with locked():
                 out = reap_once()
             if out["reaped"] or out["stale_stage_removed"] or out["docker_unanswered"]:
                 print(json.dumps(out), flush=True)

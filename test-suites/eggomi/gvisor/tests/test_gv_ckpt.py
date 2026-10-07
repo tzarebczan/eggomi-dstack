@@ -339,10 +339,11 @@ class GvCkptTest(unittest.TestCase):
             thread.join(5)
         self.assertFalse(thread.is_alive())
 
-    def start_reaper(self) -> "subprocess.Popen[bytes]":
+    def start_reaper(self, **extra: str) -> "subprocess.Popen[bytes]":
         """Run the reaper as the CVM does: its own process, a short loop."""
         env = dict(
             os.environ,
+            **extra,
             EGGOMI_GV_CKPT_STATE=str(gv_ckpt.STATE_DIR),
             EGGOMI_GV_CKPT_DOCKER=gv_ckpt.DOCKER,
             EGGOMI_GV_CKPT_DOCKER_ROOT=str(gv_ckpt.DOCKER_ROOT),
@@ -454,6 +455,53 @@ class GvCkptTest(unittest.TestCase):
             )
         finally:
             del os.environ["FAKE_DOCKER_LOG"]
+
+    def test_a_reaper_stuck_on_docker_still_meets_the_deadline(self) -> None:
+        """Every docker call of the reaper hangs; the deadline holds anyway."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 800))
+        self.run_cmd("create", "--leave-running", "browser", "s")
+        reaper = self.start_reaper(FAKE_DOCKER_HANG="6")
+        try:
+            deadline = time.time() + 2.5
+            while self.image("s").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(self.image("s").exists())
+        finally:
+            reaper.kill()
+            reaper.wait(5)
+
+    def test_a_lockless_deletion_spares_a_name_reused_meanwhile(self) -> None:
+        """The record is reread just before deleting: a new image is left alone."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 60_000))
+        self.run_cmd("create", "--leave-running", "browser", "s")
+        path = self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")
+        fresh = json.loads(path.read_text())["checkpoints"]["s"]
+        stale = dict(fresh, created_ms=fresh["created_ms"] - 5000, deadline_ms=1)
+        self.assertFalse(gv_ckpt.still_expired(path, "s", stale, gv_ckpt.now_ms()))
+        self.assertFalse(gv_ckpt.still_expired(path, "s", fresh, gv_ckpt.now_ms()))
+
+    def test_a_dead_create_gets_its_restart_policy_back(self) -> None:
+        """Killed after setting the policy aside: the reaper puts it back."""
+        self.run_cmd("arm", "browser")
+        db = json.loads(self.db.read_text())
+        db["containers"]["browser"]["restart"] = "no"
+        self.db.write_text(json.dumps(db))
+        path = self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")
+        state = json.loads(path.read_text())
+        state["checkpoints"]["half"] = {
+            "kind": "pristine",
+            "deadline_ms": None,
+            "created_ms": gv_ckpt.now_ms(),
+            "pending": True,
+            "restart": "unless-stopped",
+        }
+        path.write_text(json.dumps(state))
+        rc, _ = self.run_cmd("reap")
+        self.assertEqual(rc, 0)
+        db = json.loads(self.db.read_text())
+        self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
 
     def test_reap_deletes_every_image_left_over_from_before_a_reboot(self) -> None:
         """A cleared /run leaves images with no record; one pass deletes them."""
