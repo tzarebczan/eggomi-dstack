@@ -23,7 +23,13 @@
 #      see what it looks for: what the browser sandbox (as root) sees of the
 #      keeper's files, processes, memory, and network; what a process that
 #      escaped into the browser Sentry's host namespaces sees; and the CVM
-#      floor that keeps sandboxes off the CVM's own services.
+#      floor that keeps sandboxes off the CVM's own services;
+#   5. checks the release hardening of eggomi#780 that init-gvisor.sh
+#      installs (measured, in compose-hash): the CVM floor is its, not the
+#      suite's; every checkpoint and restore goes through gv-ckpt, which
+#      refuses a reuse checkpoint after a fill, deletes post-fill images at
+#      the session's expiry, refuses them afterwards, and leaves no staged
+#      restore copy in /tmp. Each check fails on a CVM booted without it.
 set -euo pipefail
 
 SUITE_TAG=s4
@@ -32,8 +38,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/incvm-lib.sh"
 
 CASES="$RUN_DIR/cases.jsonl"
 BOUNDARY="$RUN_DIR/boundary.jsonl"
+POLICY="$RUN_DIR/policy.jsonl"
 FAILED=0
 BFAILED=0
+PFAILED=0
+POLICY_CHECKS=8
 
 # record NAME EXPECT_JSON ACTUAL_JSON: EXPECT's keys must match in ACTUAL.
 record() {
@@ -61,6 +70,28 @@ boundary() {
   fi
   jq -cn --arg name "$name" --arg test "$test" --argjson evidence "$evidence" --argjson pass "$pass" \
     '{name: $name, test: $test, pass: $pass, evidence: $evidence}' >>"$BOUNDARY"
+}
+
+# policy NAME JQ_TEST EVIDENCE_JSON: a checkpoint-policy check (gv-ckpt).
+policy() {
+  local name=$1 test=$2 evidence=$3 pass=false
+  if jq -e "$test" <<<"$evidence" >/dev/null 2>&1; then
+    pass=true
+  else
+    PFAILED=$((PFAILED + 1))
+    log "policy $name failed: $evidence"
+  fi
+  jq -cn --arg name "$name" --arg test "$test" --argjson evidence "$evidence" --argjson pass "$pass" \
+    '{name: $name, test: $test, pass: $pass, evidence: $evidence}' >>"$POLICY"
+}
+
+# The checkpoint, or a raw Docker one when gv-ckpt did not make it (so the
+# suite still measures; the policy check has already failed).
+ckpt_or_raw() {
+  local reply=$1 name=$2
+  [[ "$(jq -r '.code' <<<"$reply")" == ok ]] && return 0
+  log "gv-ckpt create $name: $reply; checkpointing with Docker alone"
+  docker checkpoint create --leave-running "$B" "$name" >/dev/null || die "$name checkpoint failed"
 }
 
 probe_in() {
@@ -93,17 +124,24 @@ main() {
   begin_run
   : >"$CASES"
   : >"$BOUNDARY"
+  : >"$POLICY"
   trap cleanup EXIT
   setup_lab
   local secret="$RUN_DIR/secret" token="$RUN_DIR/token" canary="$RUN_DIR/page-canary"
   python3 -c 'import secrets; print("eggomi-pristine-canary-" + secrets.token_hex(16))' >"$canary"
 
-  # The CVM floor: shown to matter (the tools container reaches the CVM's
-  # guest agent through its gateway), then switched on.
-  local before_floor
-  before_floor=$(docker exec -i "$T" python3 /opt/eggomi/boundary_probe.py \
+  # The CVM floor is init-gvisor.sh's. Control: with a one-rule hole for
+  # the launcher (runc) alone, it reaches the guest agent through its
+  # gateway, so the probe sees an open service; with the hole closed, the
+  # floor stops even a runc container.
+  local floor_ev hole_open hole_closed
+  floor_ev=$(floor_evidence)
+  floor_hole -I
+  hole_open=$(docker exec -i "$T" python3 /opt/eggomi/boundary_probe.py \
     <<<'{"connect": ["10.231.10.1:8090", "10.231.10.1:22"]}')
-  floor_on
+  floor_hole_close
+  hole_closed=$(docker exec -i "$T" python3 /opt/eggomi/boundary_probe.py \
+    <<<'{"connect": ["10.231.10.1:8090", "10.231.10.1:22"]}')
 
   create_keeper
   docker start "$K" >/dev/null
@@ -116,6 +154,9 @@ main() {
   create_browser
   docker start "$B" >/dev/null
   wait_browser 90 || die "the guard did not reach Chromium's DevTools"
+  local arm
+  arm=$(gv_ckpt arm "$B")
+  policy browser_armed_pristine '.code == "ok" and .pristine' "$arm"
 
   # 1. Cases -----------------------------------------------------------------
   local P=$PURPOSE out
@@ -183,12 +224,15 @@ main() {
     "$(jq -n --argjson b "$ev" --argjson k "$control" \
       '{browser: {connect: $b.connect}, keeper_control: {connect: $k.connect}}')"
   boundary cvm_floor_blocks_cvm_services \
-    '.before_floor.connect["10.231.10.1:8090"] == "connected"
-     and .browser_after_floor["10.231.11.1:8090"] != "connected"
-     and .browser_after_floor["10.231.11.1:22"] != "connected"' \
-    "$(jq -n --argjson f "$before_floor" --argjson b "$ev" \
-      '{before_floor: $f, browser_after_floor: {"10.231.11.1:8090": $b.connect["10.231.11.1:8090"],
-        "10.231.11.1:22": $b.connect["10.231.11.1:22"]}}')"
+    "(.measured_floor | $FLOOR_TEST)"'
+     and .launcher_floor_hole.connect["10.231.10.1:8090"] == "connected"
+     and ([.launcher_floor_closed.connect[]] | all(. != "connected"))
+     and .browser["10.231.11.1:8090"] != "connected"
+     and .browser["10.231.11.1:22"] != "connected"' \
+    "$(jq -n --argjson m "$floor_ev" --argjson o "$hole_open" --argjson c "$hole_closed" --argjson b "$ev" \
+      '{measured_floor: $m, launcher_floor_hole: $o, launcher_floor_closed: $c,
+        browser: {"10.231.11.1:8090": $b.connect["10.231.11.1:8090"],
+                  "10.231.11.1:22": $b.connect["10.231.11.1:22"]}}')"
 
   # Escape: from the browser Sentry's host PID and network namespaces. The
   # control escapes into the keeper Sentry's namespaces the same way.
@@ -225,27 +269,52 @@ main() {
     "$sentries"
 
   # 3. A pristine checkpoint, then a fill, then checkpoints after it --------
+  # Every checkpoint goes through gv-ckpt. The pristine one may be kept for
+  # reuse; after the fill, a reuse checkpoint is refused, and a suspend
+  # checkpoint carries the filled session's expiry as its deadline.
   out=$(guard_ctl "{\"cmd\":\"canary\",\"text\":\"$(cat "$canary")\"}")
   [[ "$(jq -r '.code' <<<"$out")" == ok ]] || die "canary page failed: $out"
-  docker checkpoint create --leave-running "$B" pristine >/dev/null || die "pristine checkpoint failed"
+  local ck_pristine
+  ck_pristine=$(gv_ckpt create --reuse --leave-running "$B" pristine)
+  policy pristine_reuse_checkpoint_allowed '.code == "ok" and .kind == "pristine"' "$ck_pristine"
+  ckpt_or_raw "$ck_pristine" pristine
 
-  local live fill
-  live=$(guard_ctl "{\"cmd\":\"session\",\"purpose\":\"$P\",\"ttl_ms\":20000,\"redeem\":false}")
-  fill=$(guard_ctl '{"cmd":"fill"}')
-  record live_session_filled '{"mint":"ok","accept":"filled","fill":"ok"}' \
-    "$(jq -c --argjson f "$fill" '. + {fill: $f.code}' <<<"$live")"
+  # The live session: 30 s, the keeper's longest. The post-fill images must
+  # be searched and the suspend restored before it expires.
+  local live fill marked
+  live=$(guard_ctl "{\"cmd\":\"session\",\"purpose\":\"$P\",\"ttl_ms\":30000,\"redeem\":false}")
   out=$(guard_ctl '{"cmd":"held"}')
   jq -r '.held.token' <<<"$out" >"$token"
   chmod 600 "$token"
   local expires_ms t ckpt_seconds
   expires_ms=$(jq -r '.held.expires_ms' <<<"$out")
+  # The fill is recorded before it happens.
+  marked=$(gv_ckpt filled "$B" "$expires_ms")
+  fill=$(guard_ctl '{"cmd":"fill"}')
+  record live_session_filled '{"mint":"ok","accept":"filled","fill":"ok"}' \
+    "$(jq -c --argjson f "$fill" '. + {fill: $f.code}' <<<"$live")"
+  local ck_reuse ck_filled ck_closed reuse_dir=false
+  ck_reuse=$(gv_ckpt create --reuse --leave-running "$B" reuse-after-fill)
+  [[ -e "$(ckpt_dir reuse-after-fill)" ]] && reuse_dir=true
+  policy reuse_checkpoint_refused_after_fill \
+    '.marked.code == "ok" and .marked.deadline_ms == .expires_ms
+     and .reuse.exit == 3 and .reuse.code == "not_pristine" and .image_written == false' \
+    "$(jq -n --argjson m "$marked" --argjson r "$ck_reuse" --argjson e "$expires_ms" --argjson d "$reuse_dir" \
+      '{marked: $m, expires_ms: $e, reuse: $r, image_written: $d}')"
   t=$(now)
-  docker checkpoint create --leave-running "$B" filled >/dev/null || die "filled checkpoint failed"
+  ck_filled=$(gv_ckpt create --leave-running "$B" filled)
+  ckpt_or_raw "$ck_filled" filled
   ckpt_seconds=$(since "$t")
   out=$(guard_ctl "{\"cmd\":\"close\",\"target\":\"$(jq -r '.target' <<<"$fill")\"}")
   [[ "$(jq -r '.code' <<<"$out")" == ok ]] || die "the filled tab did not close: $out"
   sleep 2
-  docker checkpoint create --leave-running "$B" closed >/dev/null || die "after-close checkpoint failed"
+  ck_closed=$(gv_ckpt create --leave-running "$B" closed)
+  ckpt_or_raw "$ck_closed" closed
+  # shellcheck disable=SC2016 # $e is a jq variable
+  policy post_fill_checkpoints_carry_the_session_deadline \
+    '.expires_ms as $e | [.filled, .closed] | all(.code == "ok" and .kind == "post_fill" and .deadline_ms == $e)' \
+    "$(jq -n --argjson f "$ck_filled" --argjson c "$ck_closed" --argjson e "$expires_ms" \
+      '{filled: $f, closed: $c, expires_ms: $e}')"
   docker stop -t 10 "$B" >/dev/null
 
   local s_pristine s_filled s_closed c_pristine c_filled t_closed s_bdisk s_gdisk k_disk
@@ -262,22 +331,31 @@ main() {
   sync
   k_disk=$(scan_hits "$secret" "$RUN_DIR/scan-secret-keeper-volume.json" \
     "$(docker volume inspect -f '{{.Mountpoint}}' "$VOL_K")")
+  # Coverage of the checkpoint searches, now: the post-fill images are
+  # deleted at the session's expiry.
+  local coverage=true name ckpt_bytes
+  for name in pristine filled closed; do
+    ckpt_covered "$RUN_DIR/scan-secret-$name.json" "$(ckpt_dir "$name")" || coverage=false
+  done
+  ckpt_bytes=$(du -s -B1 --apparent-size "$(ckpt_dir filled)" | awk '{print $1}')
 
-  # 4. Restore the filled checkpoint: the carried session is TTL-bound ------
-  docker start --checkpoint filled "$B" >/dev/null || die "restore failed"
+  # 4. Restore the filled checkpoint (a suspend of the same session, before
+  #    its expiry): the carried session is TTL-bound, and gv-ckpt removes
+  #    containerd's staged copy (tmpfs: the filled image again) in the same
+  #    step.
+  local restored copies copy_count
+  restored=$(gv_ckpt restore "$B" filled)
+  if [[ "$(jq -r '.code' <<<"$restored")" != ok ]]; then
+    log "gv-ckpt restore: $restored; restoring with Docker alone"
+    docker start --checkpoint filled "$B" >/dev/null || die "restore failed"
+  fi
+  copies=$(restore_copies)
+  copy_count=$(grep -c . <<<"$copies" || true)
+  purge_restore_copies
   wait_browser 90 || die "restored browser did not answer DevTools"
   local rping rcdp
   rping=$(guard_ctl '{"cmd":"ping"}' | jq -r '.code')
   rcdp=$(guard_ctl '{"cmd":"browser"}' | jq -r '.code')
-  # containerd's leftover restore copy (tmpfs): the filled image again.
-  local copies s_copy t_copy
-  copies=$(restore_copies)
-  [[ -n "$copies" ]] || die "no containerd restore copy found; the restore path changed"
-  # shellcheck disable=SC2086 # one path per line, no spaces
-  s_copy=$(scan_hits "$secret" "$RUN_DIR/scan-secret-restore-copy.json" $copies)
-  # shellcheck disable=SC2086
-  t_copy=$(scan_hits "$token" "$RUN_DIR/scan-token-restore-copy.json" $copies)
-  purge_restore_copies
   record restored_keeper_rpc '{"code":"ok","cdp":"ok"}' \
     "$(jq -cn --arg p "$rping" --arg c "$rcdp" '{code: $p, cdp: $c}')"
   # The restored page must carry the original grant and token, so that the
@@ -290,35 +368,68 @@ main() {
   record restored_session_expired '{"code":"expired","grant_match":true,"token_match":true}' \
     "$(jq -c --argjson m "$match" '. + {grant_match: $m.grant_match, token_match: $m.token_match}' \
       <<<"$(guard_ctl '{"cmd":"redeem_from_page"}')")"
+
+  # 5. The session expired: its post-fill images are deleted (gv-ckpt's
+  #    reaper, started by init-gvisor.sh) and refused; the pristine image
+  #    stays reusable. ---------------------------------------------------------
+  local gone_after=-1 deadline=$((SECONDS + 10))
+  while ((SECONDS < deadline)); do
+    if [[ ! -e "$(ckpt_dir filled)" && ! -e "$(ckpt_dir closed)" ]]; then
+      gone_after=$(awk -v e="$expires_ms" -v n="$(date +%s%3N)" 'BEGIN { printf "%.3f", (n - e) / 1000 }')
+      break
+    fi
+    sleep 0.2
+  done
+  local pristine_kept=false
+  [[ -s "$(ckpt_dir pristine)/pages.img" ]] && pristine_kept=true
+  policy post_fill_images_deleted_at_expiry \
+    '.gone_after_expiry_seconds >= 0 and .pristine_kept' \
+    "$(jq -n --argjson g "$gone_after" --argjson p "$pristine_kept" \
+      '{gone_after_expiry_seconds: $g, pristine_kept: $p}')"
   docker stop -t 10 "$B" >/dev/null
+  local expired_restore
+  expired_restore=$(gv_ckpt restore "$B" filled)
+  policy expired_post_fill_image_refused \
+    '.exit == 3 and (.code == "unknown_checkpoint" or .code == "expired")' "$expired_restore"
+  local pristine_restore pristine_copies pristine_up=false
+  pristine_restore=$(gv_ckpt restore "$B" pristine)
+  if [[ "$(jq -r '.code' <<<"$pristine_restore")" == ok ]] && wait_browser 90; then
+    pristine_up=true
+  fi
+  pristine_copies=$(restore_copies | grep -c . || true)
+  purge_restore_copies
+  policy pristine_image_reusable '.restore.code == "ok" and .restore.kind == "pristine" and .browser_up' \
+    "$(jq -n --argjson r "$pristine_restore" --argjson u "$pristine_up" '{restore: $r, browser_up: $u}')"
+  policy restore_leaves_no_residue \
+    '[.filled, .pristine] | all(.restore.staged_copies_removed >= 1 and .restore.staged_bytes > 0
+       and .restore.residue == 0 and .tmp_copies_after == 0)' \
+    "$(jq -n --argjson r "$restored" --argjson c "$copy_count" --argjson p "$pristine_restore" \
+      --argjson pc "$pristine_copies" \
+      '{filled: {restore: $r, tmp_copies_after: $c}, pristine: {restore: $p, tmp_copies_after: $pc}}')"
+  docker stop -t 10 "$B" >/dev/null 2>&1 || true
   local s_restored
   # shellcheck disable=SC2046
   s_restored=$(scan_hits "$secret" "$RUN_DIR/scan-secret-restored-storage.json" $(container_paths "$B"))
 
-  # Coverage: each checkpoint search read the memory image.
-  local coverage=true name
-  for name in pristine filled closed; do
-    ckpt_covered "$RUN_DIR/scan-secret-$name.json" "$(ckpt_dir "$name")" || coverage=false
-  done
+  # Coverage of the other searches.
   jq -e '.files_scanned >= 1' "$RUN_DIR/scan-secret-keeper-volume.json" >/dev/null || coverage=false
   # A container directory alone holds config.v2.json, hostconfig.json,
   # hostname, hosts, and resolv.conf.
   for name in browser-storage guard-storage restored-storage; do
     jq -e '.files_scanned >= 5' "$RUN_DIR/scan-secret-$name.json" >/dev/null || coverage=false
   done
-  jq -e '.files_scanned >= 3' "$RUN_DIR/scan-secret-restore-copy.json" >/dev/null || coverage=false
   [[ $coverage == true ]] || log "a leak search did not cover its target; see $RUN_DIR/scan-*.json"
-  local ckpt_bytes
-  ckpt_bytes=$(du -s -B1 --apparent-size "$(ckpt_dir filled)" | awk '{print $1}')
 
-  local cases_total bcount ok=true
+  local cases_total bcount pcount ok=true
   cases_total=$(wc -l <"$CASES")
   bcount=$(wc -l <"$BOUNDARY")
+  pcount=$(wc -l <"$POLICY")
   ((FAILED == 0 && cases_total == 14)) || ok=false
   ((BFAILED == 0 && bcount == 9)) || ok=false
+  ((PFAILED == 0 && pcount == POLICY_CHECKS)) || ok=false
   ((s_pristine == 0 && s_filled == 0 && s_closed == 0)) || ok=false
-  ((s_bdisk == 0 && s_gdisk == 0 && s_restored == 0 && s_copy == 0)) || ok=false
-  ((c_pristine > 0 && c_filled > 0 && k_disk > 0 && t_copy > 0)) || ok=false
+  ((s_bdisk == 0 && s_gdisk == 0 && s_restored == 0)) || ok=false
+  ((c_pristine > 0 && c_filled > 0 && k_disk > 0)) || ok=false
   [[ $coverage == true ]] || ok=false
 
   cat >"$METRICS" <<EOF
@@ -330,21 +441,24 @@ eggomi_s4_cases_total $cases_total
 eggomi_s4_cases_failed_total $FAILED
 eggomi_s4_boundary_checks_total $bcount
 eggomi_s4_boundary_checks_failed_total $BFAILED
+eggomi_s4_policy_checks_total $pcount
+eggomi_s4_policy_checks_failed_total $PFAILED
 eggomi_s4_secret_hits{target="browser_checkpoint_pristine"} $s_pristine
 eggomi_s4_secret_hits{target="browser_checkpoint"} $s_filled
 eggomi_s4_secret_hits{target="browser_checkpoint_after_tab_close"} $s_closed
 eggomi_s4_secret_hits{target="browser_disk"} $s_bdisk
 eggomi_s4_secret_hits{target="guard_disk"} $s_gdisk
 eggomi_s4_secret_hits{target="restored_browser_disk"} $s_restored
-eggomi_s4_secret_hits{target="containerd_restore_copy"} $s_copy
 eggomi_s4_positive_control_hits{target="canary_page_in_pristine_checkpoint"} $c_pristine
 eggomi_s4_positive_control_hits{target="session_token_in_browser_checkpoint"} $c_filled
 eggomi_s4_positive_control_hits{target="secret_on_keeper_disk"} $k_disk
-eggomi_s4_positive_control_hits{target="session_token_in_restore_copy"} $t_copy
 eggomi_s4_token_hits_after_tab_close $t_closed
 eggomi_s4_scan_coverage $([[ $coverage == true ]] && echo 1 || echo 0)
 eggomi_s4_checkpoint_seconds $ckpt_seconds
 eggomi_s4_checkpoint_bytes $ckpt_bytes
+eggomi_s4_restore_tmp_copies_after_restore $copy_count
+eggomi_s4_restore_staged_bytes_removed $(jq -r '.staged_bytes // 0' <<<"$restored")
+eggomi_s4_post_fill_images_gone_after_expiry_seconds $gone_after
 eggomi_s4_ok $([[ $ok == true ]] && echo 1 || echo 0)
 EOF
   jq -n \
@@ -353,6 +467,7 @@ EOF
     --argjson ok "$ok" \
     --slurpfile cases "$CASES" \
     --slurpfile boundary "$BOUNDARY" \
+    --slurpfile policy "$POLICY" \
     --slurpfile sentries "$RUN_DIR/sentries.json" \
     --slurpfile sp "$RUN_DIR/scan-secret-pristine.json" \
     --slurpfile sf "$RUN_DIR/scan-secret-filled.json" \
@@ -364,19 +479,15 @@ EOF
     --slurpfile gd "$RUN_DIR/scan-secret-guard-storage.json" \
     --slurpfile rd "$RUN_DIR/scan-secret-restored-storage.json" \
     --slurpfile kd "$RUN_DIR/scan-secret-keeper-volume.json" \
-    --slurpfile rc "$RUN_DIR/scan-secret-restore-copy.json" \
-    --slurpfile tr "$RUN_DIR/scan-token-restore-copy.json" \
     '{schema: "eggomi-s4-report/v1", environment: "L1-gvisor", runsc: $version, platform: "systrap",
-      run: $run, ok: $ok, cases: $cases, boundary: $boundary, sentries: $sentries[0],
+      run: $run, ok: $ok, cases: $cases, boundary: $boundary, policy: $policy, sentries: $sentries[0],
       scans: {secret_in_pristine_checkpoint: $sp[0], secret_in_filled_checkpoint: $sf[0],
               secret_in_after_close_checkpoint: $sc[0], secret_on_browser_storage: $bd[0],
               secret_on_guard_storage: $gd[0], secret_on_restored_browser_storage: $rd[0],
               control_canary_in_pristine_checkpoint: $cp[0],
               control_token_in_filled_checkpoint: $tf[0],
               observed_token_in_after_close_checkpoint: $tc[0],
-              control_secret_on_keeper_volume: $kd[0],
-              secret_in_containerd_restore_copy: $rc[0],
-              control_token_in_containerd_restore_copy: $tr[0]}}' >"$REPORT"
+              control_secret_on_keeper_volume: $kd[0]}}' >"$REPORT"
   rm -f "$token"
   log "metrics: $METRICS"
   [[ $ok == true ]] || die "s4 failed; see $REPORT"

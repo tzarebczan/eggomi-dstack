@@ -32,7 +32,10 @@ Summary:
   page, the filled token), and so does the keeper volume (the secret). Each
   storage search must have read the target's files, and a failed search
   fails the suite.
-- Four findings need design attention. Each is described below.
+- Four findings need design attention. Each is described below. The
+  release hardening of eggomi#780 closes findings 1, 2, and 5 and caps the
+  ZFS ARC in the measured init script; see
+  [Release hardening](#release-hardening-eggomi780).
   1. A sandbox can reach the CVM's own services through its bridge gateway,
      dstack-guest-agent on `:8090` among them. A CVM input floor is needed.
   2. containerd leaves a full copy of every restored checkpoint in the CVM's
@@ -80,7 +83,8 @@ The development image's docker can use runsc as it ships. The app compose
 carries [`init-gvisor.sh`](../../test-suites/eggomi/gvisor/init-gvisor.sh)
 as its `init_script`. dstack-prepare sources that script with the data disk
 mounted and before docker.service starts, and the script is part of
-compose-hash. It does three things:
+compose-hash. It does these things (steps 3 to 5 are the release hardening
+described below):
 
 1. It fetches the release bundle and checks it against the pinned SHA-512.
    It keeps only five files, each pinned too: `runsc`, and `gvisor_sentry`,
@@ -90,7 +94,10 @@ compose-hash. It does three things:
 2. It adds `runtimes.runsc = {path, runtimeArgs: ["--platform=systrap"]}`
    and `experimental: true` (for `docker checkpoint`) to
    `/etc/docker/daemon.json`. `/etc` is a writable overlay.
-3. It starts a lab sshd on the `/etc` overlay. This step is lab only.
+3. It installs the CVM input floor (`EGGOMI-FLOOR`, IPv4 and IPv6).
+4. It caps the ZFS ARC.
+5. It installs `gv-ckpt`, the checkpoint policy, and starts its reaper.
+6. It starts a lab sshd on the `/etc` overlay. This step is lab only.
 
 Boot log: `init-gvisor: runsc version release-20260928.0 registered
 (systrap)`. The compose's `runsc-smoke` service (`runtime: runsc`) reports
@@ -106,7 +113,8 @@ A production image needs these things:
   the CC1 pre-launch path applies.
 - `experimental` only if Docker checkpoints are used. Calling `runsc
   checkpoint`/`restore` directly does not need it.
-- The input floor below.
+- The input floor, the ARC cap, and `gv-ckpt`, in the measured init script
+  ([Release hardening](#release-hardening-eggomi780)).
 - No KVM. systrap needs none.
 
 ## S3': lifecycle and memory
@@ -242,7 +250,7 @@ over 32 MB.
 | browser checkpoint, pristine (before any fill) | 0 | a canary page opened before it: 128-138 hits |
 | browser checkpoint right after the fill | 0 | the filled token: 6-7 hits |
 | browser checkpoint after the filled tab was closed | 0 | (observation) the token: 2-3 hits |
-| containerd's leftover restore copy (`/tmp/ctrd-checkpoint*`) | 0 | the filled token: 6-7 hits |
+| containerd's leftover restore copy (`/tmp/ctrd-checkpoint*`) | 0 | the filled token: 6-7 hits (before eggomi#780; since then no copy is left to search: `gv-ckpt` removes it in the restore step, and S4' checks that none remains) |
 | browser storage: writable layer (including gVisor's `root:self` file store) and container directory | 0 | |
 | guard storage | 0 | |
 | restored browser storage | 0 | |
@@ -267,7 +275,7 @@ markers appear on no command line.
 | The browser cannot see the keeper's processes | no `keeper_svc` or `gv_guard` among the browser's processes | the keeper's probe lists `keeper_svc` |
 | The browser cannot read the keeper's memory | `/proc/<keeper Sentry pid>/mem` and the guard's: `ENOENT`. No `/proc/kcore` and no `/dev/mem` | |
 | The browser cannot connect to the keeper | the keeper, the guard's keeper-side address, and the launcher: `ENETUNREACH`; the guard's browser-side address: `ECONNREFUSED` (no listener) | the keeper connects to itself |
-| The CVM floor blocks the CVM's own services | from the browser, `10.231.11.1:8090` and `:22` are not connected | before the floor, the launcher reaches the guest agent on `:8090` |
+| The CVM floor blocks the CVM's own services | from the browser, `10.231.11.1:8090` and `:22` are not connected. Since eggomi#780 the floor is the measured init script's, and the check also requires its rules | before the floor, the launcher reaches the guest agent on `:8090`. Since eggomi#780: through a one-rule hole for the launcher alone, and not once the hole is closed |
 | An escape into the browser Sentry's host namespaces sees no other sandbox | a fresh `/proc` in that PID namespace lists only the browser's Sentry and stubs; the keeper's and guard's Sentry pids are `ENOENT`; the namespace's interfaces attach only to the browser bridge | the same escape into the keeper's namespaces sees the keeper's Sentry and attaches only to the keeper bridge; the guard's attaches to both |
 | The Sentries are isolated on the host | each Sentry has seccomp mode 2, `no_new_privs`, its own PID, network, mount, IPC, UTS, and user namespaces (all distinct across the three), and a root holding only `etc` and `proc` | |
 
@@ -291,7 +299,9 @@ not a connect.
    --ctstate NEW,INVALID -j DROP` for each role bridge. With it, the browser
    reaches neither port, and traffic between sandboxes on a bridge is
    unaffected. A production compose needs this floor, or CC1's
-   `nft-egress.sh` equivalent, in a measured init script.
+   `nft-egress.sh` equivalent, in a measured init script. **Closed:**
+   init-gvisor.sh installs it (eggomi#780 item 1), and the suites no longer
+   add their own.
 2. **containerd leaves every restore's checkpoint image in tmpfs.** `docker
    start --checkpoint` stages the image in `/tmp/ctrd-checkpoint*`, which is
    RAM in the CVM, and never removes it. The copy survives the restore and
@@ -299,6 +309,7 @@ not a connect.
    session included, and it pins 150 to 180 MB until reboot. S3' measures it
    (`restore_tmp_copy_bytes`), S4' searches it, and both remove it. The
    restore path must remove it too, or use `runsc restore` directly.
+   **Closed:** `gv-ckpt restore` removes it in the same step (item 2).
 3. **Docker checkpoints need `experimental`.** Docker can only restore into
    the same container. A checkpoint is uncompressed by default, so it is as
    large as the browser's memory.
@@ -306,7 +317,126 @@ not a connect.
    S3'.
 5. **A filled session outlives its tab.** After the tab that held the fill
    was closed, the next checkpoint still held the token (2 to 3 hits). See the
-   pristine-checkpoint rule.
+   pristine-checkpoint rule, which `gv-ckpt` now enforces (item 4).
+
+## Release hardening (eggomi#780)
+
+Four changes make the design fit for a release. All four live in the
+measured init script ([`init-gvisor.sh`](../../test-suites/eggomi/gvisor/init-gvisor.sh)),
+so compose-hash covers them. Each one has a suite check that fails on a CVM
+booted without it. The suites no longer install anything of their own.
+
+| # | Change | Enforced by | Check (fails without it) |
+| --- | --- | --- | --- |
+| 1 | CVM input floor | an `EGGOMI-FLOOR` chain, IPv4 and IPv6, jumped to first from `INPUT`. It returns established traffic and drops everything else from `docker0`, `br-+`, and `gv+`. If the floor cannot be installed, dockerd is masked and no container starts | S3' `cvm_floor_measured`; S4' boundary `cvm_floor_blocks_cvm_services`: the rules are init's, and the browser reaches neither `:8090` nor `:22`. Control: with a one-rule hole for the launcher alone, the launcher reaches `:8090`. With the hole closed, even a runc container cannot |
+| 2 | No restore residue | `gv-ckpt restore` runs `docker start --checkpoint`, then removes the copy containerd staged in `/tmp` in the same step. The reaper also removes any copy a raw restore left behind, after 60 s | S3' `restore_staged_copy_seen` (the control: the tool saw and removed a copy of 171 MB) and `no_restore_residue`; S4' policy `restore_leaves_no_residue`, for a post-fill and a pristine restore |
+| 3 | ZFS ARC cap | `zfs_arc_max` = MemTotal/16, clamped to 256 MiB..1 GiB and kept above `zfs_arc_min`. That is 371 MiB in the 6 GB CVM, against a default of 5.1 GB | S3' `zfs_arc_capped`: the cap is in force, and the ARC stayed within it (plus 64 MiB) at every sample |
+| 4 | Pristine-checkpoint rule | `gv-ckpt`. `arm` marks a browser that started from its image as pristine. `filled` records a fill before it happens. `create --reuse` is refused after a fill. A post-fill checkpoint carries the filled session's expiry as its deadline. The reaper deletes it at that deadline, and `restore` refuses it after the deadline, as it does any image `gv-ckpt` did not create | S4' policy checks: `browser_armed_pristine`, `pristine_reuse_checkpoint_allowed`, `reuse_checkpoint_refused_after_fill`, `post_fill_checkpoints_carry_the_session_deadline`, `post_fill_images_deleted_at_expiry`, `expired_post_fill_image_refused`, and `pristine_image_reusable` |
+
+`gv-ckpt` ([`gv_ckpt.py`](../../test-suites/eggomi/gvisor/gv_ckpt.py)) is
+inlined into the init script when gvisor-lab.sh renders it, and installed as
+`/run/eggomi/bin/gv-ckpt` (root only). Its reaper runs as a transient
+systemd service, `eggomi-gv-reaper.service`, with `Restart=always` and no
+start-rate limit, so a kill or the OOM killer does not end it; S3'
+`reaper_supervised` kills it and requires a new main process within 10 s.
+The reaper drops a container's policy state only when dockerd answers "No
+such container". If dockerd does not answer (restarting, unreachable, or
+past the 120 s docker timeout), it keeps the state, still enforces the
+deadlines on the image files, and retries on its next pass. Its state is in
+tmpfs, so `arm` also
+refuses a container that was created before the current boot. The reaper
+reaps at each deadline and every 5 s otherwise. While it sleeps it rereads
+the deadlines every 0.2 s (state files only), so a deadline added meanwhile
+is not missed. A checkpoint or
+restore holds the policy lock for seconds, so each one reaps once more before
+it releases the lock: a deadline that passes meanwhile is enforced at once,
+on the step's own image too. A release's
+launcher calls `gv-ckpt` instead of `docker checkpoint` and `docker start
+--checkpoint`. A raw Docker checkpoint does not get past `restore`, which
+refuses images it did not record. The reaper deletes every checkpoint it has
+no record of since boot. That covers raw checkpoints, and also every image
+left on the data disk from before a CVM reboot: the records live in tmpfs,
+so such an image's deadline is unknown, and the first pass after boot
+deletes it. S3' `reboot_orphans_reaped` simulates the reboot by moving the
+browser's record aside, and requires one reap pass to delete both of its
+images. Host-only unit tests run against a fake
+docker CLI: `test-suites/eggomi/scripts/gvisor-unit-tests.sh`.
+
+Lab runs on 2026-10-07. A fresh CVM, `eggomi-gvisor-780`, was booted with
+the hardened init script beside the standing lab CVM, which was left alone.
+It was redeployed for each revision of the script: six runs, and the last
+one is on this PR's final code. Ranges below cover all six runs.
+
+- The boot log shows each step: `ZFS ARC capped at 388786688 bytes` and
+  `gv-ckpt installed; reaper running`. `iptables -S` shows `-A INPUT -j
+  EGGOMI-FLOOR` as the first rule, and the same chain exists under ip6tables.
+- S3' passed every check: 21/21 in the last run, 20/20 in the run
+  before it, 19/19 in the two before that, and 18/18 in the first. The
+  count grew as checks were added. Nine checks are new:
+  `reboot_orphans_reaped`, `reaper_supervised`,
+  `cvm_floor_measured`, `browser_armed_pristine`, `browser_never_filled`,
+  `checkpoint_via_policy`, `restore_staged_copy_seen`,
+  `no_restore_residue`, and `zfs_arc_capped`. Restore to ready took 2.13 to
+  2.29 s (`gv-ckpt restore` 1.78 to 1.83 s, cleanup included), and the
+  browser checkpoint 2.2 to 2.4 s. The first run's 5.1 s checkpoint was on a
+  cold CVM.
+- S4' passed: 14/14 cases, 9/9 boundary checks, and 8/8 policy checks.
+  Every leak search found 0 hits, and each positive control hit: canary
+  127-137, filled token 6-8, secret on the keeper volume 1. After the fill,
+  `create --reuse` was refused (`not_pristine`) and wrote no image. Both
+  restores left no copy in `/tmp`; `gv-ckpt` removed 153-155 MB and
+  142-144 MB. Both post-fill images were gone 1.44 to 1.49 s after the
+  session expired. That is an upper bound: the suite first looks after its
+  post-expiry redeem. A restore of the reaped image was refused
+  (`unknown_checkpoint`), and the pristine image restored and answered
+  DevTools. The floor control behaved as designed: with the hole open, the
+  launcher connected to `:8090` and `:22`; with it closed, both connections
+  timed out, as did the browser's. In the last run, S3' killed the reaper
+  (main PID 680); systemd started a new one (PID 4686) and the unit stayed
+  active, and S4' then relied on that restarted reaper to delete the
+  post-fill images 1.45 s after expiry. In the final run,
+  `reboot_orphans_reaped` saw both of the browser's images (`s3` and
+  `orphan`) before the record was dropped, and neither after one reap pass
+  (both reaped as `orphan`).
+- Negative control: the same suites, run on the standing lab CVM booted with
+  the earlier init script, fail exactly the hardening checks. S3' fails the
+  six new checks it had then. S4' fails all 8 policy checks (`gv-ckpt` is
+  missing), and two boundary checks: `cvm_floor_blocks_cvm_services`, and
+  `browser_cannot_connect_keeper`, because the browser now reaches the
+  gateway's `:8090` and `:22`. The suites left that CVM as they found it.
+- With the cap of 389 MB, the ARC peaked at 393 to 410 MB, against 865 MB
+  before. The check allows 64 MiB of overshoot while the ARC evicts. The CVM
+  used 1,042 to 1,087 MB idle and 1,427 to 1,469 MB active, against 1,453
+  and 1,837 MB before. The host-side QEMU RSS peaked at 2.8 to 3.2 GB,
+  against 4.0 GB.
+
+### Sizing
+
+The CVM's memory cannot shrink once it is touched: there is no balloon, and
+the host-side QEMU RSS never falls. So size the CVM for its peak, and
+reserve all of it on the host. The peak is bounded by:
+
+```text
+CVM RAM >= base + ARC cap + keeper.max + guard.max + 2 x browser.max + 10 %
+```
+
+- **base** is the CVM with no roles running, without the ARC: about
+  500 MB (754 MB used when all roles had stopped, of which 251 MB was ARC).
+- **ARC cap** is MemTotal/16, clamped to 256 MiB..1 GiB (371 MiB at 6 GB).
+- The roles' cgroup limits, `memory.max`, bound what the sandboxes are
+  charged, page cache included.
+- **The browser counts twice.** While a restore runs, containerd's staged
+  copy (tmpfs) and the restored sandbox both hold the browser's memory, until
+  `gv-ckpt` removes the copy. The copy is as large as the browser's memory
+  at checkpoint time, so `browser.max` bounds it.
+
+With the lab's limits (keeper 512 MiB, guard 256 MiB, browser 2 GiB), the
+bound is 0.5 + 0.39 + 0.54 + 0.27 + 4.29 = 6.0 GB, plus 10 %: about 6.6 GB.
+The 6 GB lab CVM is enough for what was measured (peak used 1.4 GB), but not
+for the bound. A release should either size the CVM at 7 GB, or cap the
+browser at 1.5 GiB, which brings the bound to about 5.4 GB. Calling `runsc
+restore` directly would remove the staged copy and the factor of two, but
+that path is untested.
 
 ## Overhead
 
@@ -384,7 +514,9 @@ a pristine checkpoint. Closing tabs does not do it.
 | `test-suites/eggomi/scripts/gvisor-lab.sh` | fetch, serve, deploy, and remove the lab CVM; `ssh` into it |
 | `test-suites/eggomi/scripts/s3-gvisor.sh`, `s4-gvisor.sh` | host wrappers: gate (exit 77), ship, run in the CVM, sample QEMU RSS, collect |
 | `test-suites/eggomi/scripts/lib-gvisor.sh` | the host wrappers' shared code |
-| `test-suites/eggomi/gvisor/init-gvisor.sh` | the app compose's `init_script`: runsc, dockerd runtime, lab sshd |
+| `test-suites/eggomi/gvisor/init-gvisor.sh` | the app compose's `init_script`: runsc, dockerd runtime, CVM floor, ZFS ARC cap, `gv-ckpt`, lab sshd |
+| `test-suites/eggomi/gvisor/gv_ckpt.py` | `gv-ckpt`, the checkpoint policy, inlined into the init script: pristine rule, restore without residue, post-fill reaper |
+| `test-suites/eggomi/gvisor/tests/`, `scripts/gvisor-unit-tests.sh` | `gv-ckpt`'s host-only unit tests, against a fake docker CLI |
 | `test-suites/eggomi/gvisor/compose.yml` | the lab CVM's compose (`runsc-smoke`) |
 | `test-suites/eggomi/gvisor/Dockerfile.python`, `Dockerfile.browser` | the role images |
 | `test-suites/eggomi/gvisor/incvm-lib.sh`, `incvm-s3.sh`, `incvm-s4.sh` | the suites, run as root in the CVM |

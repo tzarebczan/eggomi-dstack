@@ -98,15 +98,21 @@ render_init() {
   local pub
   pub=$(cat "$GV_DIR/lab_ssh_ed25519.pub")
   python3 - "$GV_SRC/init-gvisor.sh" "http://10.0.2.2:$BUNDLE_PORT/gvisor.tar.bz2" \
-    "$GVISOR_BUNDLE_SHA512" "$GVISOR_FILES" "$pub" <<'PY'
+    "$GVISOR_BUNDLE_SHA512" "$GVISOR_FILES" "$pub" "$GV_SRC/gv_ckpt.py" <<'PY'
 import sys
 text = open(sys.argv[1], encoding="utf-8").read()
 for key, value in zip(
     ("__GVISOR_URL__", "__GVISOR_BUNDLE_SHA512__", "__GVISOR_FILES__", "__LAB_SSH_PUBKEY__"),
-    sys.argv[2:],
+    sys.argv[2:6],
 ):
     assert key in text, key
     text = text.replace(key, value)
+# gv-ckpt goes in last and whole, inside a quoted heredoc: it becomes part of
+# the init_script, so compose-hash measures it.
+tool = open(sys.argv[6], encoding="utf-8").read().rstrip("\n")
+assert "\nEGGOMI_GV_CKPT_PY\n" not in "\n" + tool + "\n"
+assert text.count("__GV_CKPT_PY__") == 1
+text = text.replace("__GV_CKPT_PY__", tool)
 sys.stdout.write(text)
 PY
 }

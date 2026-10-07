@@ -15,13 +15,26 @@
 #   2. dockerd gains runtimes.runsc with the systrap platform (no KVM in the
 #      guest; a real SEV-SNP guest cannot run KVM either) and experimental
 #      mode, for `docker checkpoint`.
-#   3. A lab sshd on guest port 22 with the lab key. The dev image's rootfs
+#   3. The CVM input floor (eggomi#780 item 1): new connections from the
+#      container bridges to the CVM itself are dropped, so no sandbox reaches
+#      the CVM's own services (dstack-guest-agent on :8090, sshd) through its
+#      bridge gateway. Fails closed: without the floor, dockerd is masked and
+#      no container starts.
+#   4. The ZFS ARC cap (item 3): zfs_arc_max is MemTotal/16, clamped to
+#      256 MiB..1 GiB, instead of ZFS's default of almost all of the CVM.
+#   5. gv-ckpt (items 2 and 4), the checkpoint policy: restores remove
+#      containerd's staged copy in the same step, a browser is checkpointed
+#      for reuse only while pristine, and its reaper deletes post-fill images
+#      at their session's expiry. Installed to /run/eggomi/bin/gv-ckpt; the
+#      reaper runs as eggomi-gv-reaper.service, Restart=always.
+#   6. A lab sshd on guest port 22 with the lab key. The dev image's rootfs
 #      and /root are read-only and its own sshd does not listen on TCP, so the
 #      key and an sshd config go on the writable /etc overlay.
 #
-# Fails soft: a step that cannot complete logs a warning and returns 0, so
-# the CVM still boots and the harness reports the gap (exit 77).
-# gvisor-lab.sh fills in the __PLACEHOLDERS__.
+# Steps 1, 2, 4, and 6 fail soft: a step that cannot complete logs a warning
+# and returns 0, so the CVM still boots and the harness reports the gap
+# (exit 77, or a failed check). Steps 3 and 5 are release hardening and fail
+# closed. gvisor-lab.sh fills in the __PLACEHOLDERS__.
 
 eggomi_gv_sha512_ok() {
   sha512sum -c --status - 2>/dev/null
@@ -101,5 +114,76 @@ eggomi_gv_sshd() {
   fi
 }
 
+# The floor drops what the role bridges open towards the CVM: Docker's
+# --internal removes egress, but the bridge gateway is the CVM itself. Replies
+# to the CVM's own connections pass, and traffic between containers on one
+# bridge is forwarded, not INPUT. Interfaces: docker0, Compose's br-*, and
+# the gv* role bridges the lab suites name. Published ports and the CVM's
+# uplink are untouched.
+eggomi_gv_floor() {
+  local ipt ifc
+  for ipt in iptables ip6tables; do
+    if ! command -v "$ipt" >/dev/null 2>&1; then
+      [ "$ipt" = ip6tables ] && [ ! -e /proc/net/if_inet6 ] && continue
+      return 1
+    fi
+    "$ipt" -w -N EGGOMI-FLOOR 2>/dev/null || "$ipt" -w -F EGGOMI-FLOOR || return 1
+    "$ipt" -w -A EGGOMI-FLOOR -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN || return 1
+    for ifc in docker0 'br-+' 'gv+'; do
+      "$ipt" -w -A EGGOMI-FLOOR -i "$ifc" -j DROP || return 1
+    done
+    "$ipt" -w -C INPUT -j EGGOMI-FLOOR 2>/dev/null || "$ipt" -w -I INPUT 1 -j EGGOMI-FLOOR || return 1
+  done
+}
+
+# zfs_arc_max at MemTotal/16, clamped to 256 MiB..1 GiB and kept above
+# zfs_arc_min. The ARC is not page cache: MemAvailable counts it as used, and
+# its default ceiling (5.1 GB of a 6 GB CVM) would crowd out the sandboxes.
+eggomi_gv_arc() {
+  local param=/sys/module/zfs/parameters/zfs_arc_max mem cap min
+  if [ ! -w "$param" ]; then
+    printf 'init-gvisor: WARNING: no ZFS ARC parameter; the ARC is not capped\n' >&2
+    return 0
+  fi
+  mem=$(awk '/^MemTotal:/ {printf "%d", $2 * 1024}' /proc/meminfo)
+  cap=$((mem / 16))
+  [ "$cap" -ge $((256 << 20)) ] || cap=$((256 << 20))
+  [ "$cap" -le $((1 << 30)) ] || cap=$((1 << 30))
+  min=$(awk '$1 == "c_min" {printf "%d", $3}' /proc/spl/kstat/zfs/arcstats 2>/dev/null)
+  [ -z "$min" ] || [ "$cap" -gt "$min" ] || cap=$((min + (64 << 20)))
+  if printf '%s\n' "$cap" >"$param"; then
+    printf 'init-gvisor: ZFS ARC capped at %s bytes\n' "$cap" >&2
+  else
+    printf 'init-gvisor: WARNING: could not cap the ZFS ARC\n' >&2
+  fi
+}
+
+eggomi_gv_ckpt() {
+  local bin=/run/eggomi/bin/gv-ckpt
+  install -d -m 0700 /run/eggomi /run/eggomi/bin || return 1
+  cat >"$bin.tmp" <<'EGGOMI_GV_CKPT_PY' || return 1
+__GV_CKPT_PY__
+EGGOMI_GV_CKPT_PY
+  chmod 0700 "$bin.tmp" && mv "$bin.tmp" "$bin" || return 1
+  # The reaper is a transient systemd service that systemd restarts however
+  # it ends (a kill, the OOM killer), with no start-rate limit. No default
+  # dependencies and --no-block: this runs inside dstack-prepare, before
+  # basic.target, so waiting on the start job would deadlock the boot.
+  systemd-run --quiet --no-block --unit=eggomi-gv-reaper \
+    -p DefaultDependencies=no -p Restart=always -p RestartSec=1 \
+    -p StartLimitIntervalSec=0 -p StandardOutput=journal -p StandardError=journal \
+    "$bin" reap --loop 5 || return 1
+  printf 'init-gvisor: gv-ckpt installed; reaper supervised (eggomi-gv-reaper.service)\n' >&2
+}
+
+# Fail closed: no container runs without the floor and the checkpoint policy.
+eggomi_gv_fail_closed() {
+  printf 'init-gvisor: ERROR: %s; dockerd is masked and no container starts\n' "$1" >&2
+  systemctl mask --runtime docker.service docker.socket >/dev/null 2>&1 || true
+}
+
 eggomi_gv_runtime
+eggomi_gv_floor || eggomi_gv_fail_closed "the CVM input floor could not be installed"
+eggomi_gv_arc
+eggomi_gv_ckpt || eggomi_gv_fail_closed "gv-ckpt could not be installed"
 eggomi_gv_sshd

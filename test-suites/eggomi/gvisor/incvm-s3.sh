@@ -11,6 +11,11 @@
 # memory.reclaim and stopping the browser return; the CVM's own memory; and
 # whether keeper RPC stays up while the browser is checkpointed, stopped,
 # and restored. Metric names follow s3-smolvm.sh where they apply.
+#
+# Release hardening (eggomi#780) checks, each failing on a CVM booted
+# without it: the measured CVM floor is in place; the browser's checkpoint
+# and restore go through gv-ckpt, which leaves no staged copy in /tmp; and
+# the ZFS ARC is capped and stays under its cap.
 set -euo pipefail
 
 SUITE_TAG=s3
@@ -84,6 +89,46 @@ guard_ok() {
   [[ "$(guard_ctl "$1" | jq -r '.code')" == ok ]]
 }
 
+# Make a second checkpoint of the running browser, drop the browser's
+# gv-ckpt record as a reboot would, and run one reap pass. Prints
+# {created, before, after, reap}: before/after are whether the two images
+# (s3 and orphan) exist.
+orphan_sweep() {
+  local cid created reap before after
+  cid=$(cid "$B")
+  created=$(gv_ckpt create --reuse --leave-running "$B" orphan)
+  before=$(jq -n --argjson a "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/s3" ]] && echo true || echo false)" \
+    --argjson b "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/orphan" ]] && echo true || echo false)" '[$a, $b]')
+  mv "/run/eggomi/gv-ckpt/$cid.json" "$RUN_DIR/gv-ckpt-record.json" 2>/dev/null || true
+  reap=$(gv_ckpt reap)
+  after=$(jq -n --argjson a "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/s3" ]] && echo true || echo false)" \
+    --argjson b "$([[ -d "/var/lib/docker/containers/$cid/checkpoints/orphan" ]] && echo true || echo false)" '[$a, $b]')
+  jq -n --argjson c "$created" --argjson b "$before" --argjson a "$after" --argjson r "$reap" \
+    '{created: $c, before: $b, after: $a, reap: ($r | {code, reaped})}'
+}
+
+# Kill the reaper's main process and wait up to 10 s for systemd to start a
+# new one. Prints {before, after, active}: the main PIDs and the unit state.
+reaper_restarts() {
+  local unit=eggomi-gv-reaper.service before after=0 deadline=$((SECONDS + 10))
+  before=$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)
+  if ((${before:-0} > 0)); then
+    kill -KILL "$before" 2>/dev/null || true
+    while ((SECONDS < deadline)); do
+      after=$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)
+      ((${after:-0} > 0 && after != before)) && break
+      sleep 0.2
+    done
+  fi
+  jq -n --argjson b "${before:-0}" --argjson a "${after:-0}" \
+    --arg s "$(systemctl is-active "$unit" 2>/dev/null || true)" '{before: $b, after: $a, active: $s}'
+}
+
+# guard_says CODE REQUEST: the guard answers REQUEST with CODE.
+guard_says() {
+  [[ "$(guard_ctl "$2" | jq -r '.code')" == "$1" ]]
+}
+
 chromium_sandboxed() {
   docker exec -i -u 0 "$B" python3 /opt/eggomi/boundary_probe.py <<<'{"chromium": true}' \
     >"$RUN_DIR/chromium-sandbox.json"
@@ -120,7 +165,8 @@ main() {
   : >"$RUN_DIR/burst.jsonl"
   trap cleanup EXIT
   setup_lab
-  floor_on
+  floor_evidence >"$RUN_DIR/floor.json"
+  check cvm_floor_measured jq_ok "$FLOOR_TEST" "$RUN_DIR/floor.json"
   local t
 
   # keeper -----------------------------------------------------------------
@@ -145,6 +191,8 @@ main() {
   wait_browser 90 || die "the guard did not reach Chromium's DevTools"
   metric 'lifecycle_seconds{machine="browser",op="ready"}' "$(since "$t")"
   metric 'lifecycle_seconds{machine="browser",op="exec_p50"}' "$(exec_p50 "$B")"
+  gv_ckpt arm "$B" >"$RUN_DIR/ckpt-arm.json"
+  check browser_armed_pristine jq_ok '.code == "ok" and .pristine' "$RUN_DIR/ckpt-arm.json"
   check keeper_rpc_from_guard guard_ok '{"cmd":"ping"}'
   check chromium_own_sandbox chromium_sandboxed
   gvctl cgroup "$(cid "$K")" | jq -c '{machine: "keeper", memory_max, cpu_max}' >"$RUN_DIR/limits.jsonl"
@@ -204,8 +252,19 @@ main() {
   sleep 1
   probe_t0=$(date +%s.%N)
 
+  # No fill happens in S3: the guard's `session` command mints, accepts, and
+  # redeems at the guard, and only its `fill` command writes into a page,
+  # which S3 never sends. So the browser is pristine and its checkpoint may
+  # be kept for reuse; browser_never_filled confirms no page holds a fill.
+  # Without gv-ckpt the policy check fails and the raw Docker checkpoint
+  # keeps the measurements going.
+  check browser_never_filled guard_says nothing_filled '{"cmd":"page_fill_matches"}'
   t=$(now)
-  docker checkpoint create --leave-running "$B" s3 >/dev/null || die "checkpoint failed"
+  gv_ckpt create --reuse --leave-running "$B" s3 >"$RUN_DIR/ckpt-create.json"
+  check checkpoint_via_policy jq_ok '.code == "ok" and .kind == "pristine"' "$RUN_DIR/ckpt-create.json"
+  if [[ "$(jq -r '.code' "$RUN_DIR/ckpt-create.json")" != ok ]]; then
+    docker checkpoint create --leave-running "$B" s3 >/dev/null || die "checkpoint failed"
+  fi
   metric 'lifecycle_seconds{machine="browser",op="checkpoint"}' "$(since "$t")"
   local ckpt
   ckpt="/var/lib/docker/containers/$(cid "$B")/checkpoints/s3"
@@ -226,21 +285,32 @@ main() {
   metric 'cvm_returned_bytes{via="browser_stop"}' "$((cvm_before - cvm_after))"
 
   t=$(now)
-  docker start --checkpoint s3 "$B" >/dev/null || die "restore failed"
+  gv_ckpt restore "$B" s3 >"$RUN_DIR/ckpt-restore.json"
+  if [[ "$(jq -r '.code' "$RUN_DIR/ckpt-restore.json")" != ok ]]; then
+    log "gv-ckpt restore: $(cat "$RUN_DIR/ckpt-restore.json"); restoring with Docker alone"
+    docker start --checkpoint s3 "$B" >/dev/null || die "restore failed"
+  fi
   metric 'lifecycle_seconds{machine="browser",op="restore_start"}' "$(since "$t")"
   wait_browser 90 || die "restored browser did not answer DevTools"
   metric 'lifecycle_seconds{machine="browser",op="restore_ready"}' "$(since "$t")"
   check keeper_rpc_from_guard_after_restore guard_ok '{"cmd":"ping"}'
   check restored_browser_cdp guard_ok '{"cmd":"browser"}'
   check chromium_own_sandbox_after_restore chromium_sandboxed
-  local copies copy_bytes=0
+  # containerd stages the image in the CVM's tmpfs and never removes it;
+  # gv-ckpt removes it in the restore step. The tool must have seen the
+  # staged copy (the control) and none may remain.
+  local copies copy_bytes=0 copy_count
   copies=$(restore_copies)
   if [[ -n "$copies" ]]; then
     # shellcheck disable=SC2086 # one path per line, no spaces
     copy_bytes=$(du -sbc $copies | awk 'END {print $1}')
   fi
-  metric 'restore_tmp_copies{machine="browser"}' "$(grep -c . <<<"$copies" || true)"
+  copy_count=$(grep -c . <<<"$copies" || true)
+  metric 'restore_tmp_copies{machine="browser"}' "$copy_count"
   metric 'restore_tmp_copy_bytes{machine="browser"}' "$copy_bytes"
+  metric 'restore_staged_bytes_removed{machine="browser"}' "$(jq -r '.staged_bytes // 0' "$RUN_DIR/ckpt-restore.json")"
+  check restore_staged_copy_seen jq_ok '.staged_copies_removed >= 1 and .staged_bytes > 0' "$RUN_DIR/ckpt-restore.json"
+  check no_restore_residue test "$copy_count" -eq 0
   purge_restore_copies
   sleep 2
   mem_sample browser "$B" restored_idle >/dev/null
@@ -259,11 +329,34 @@ main() {
   metric 'keeper_probe_p50_ms' "$(jq -r '.p50_ms // "NaN"' "$RUN_DIR/probe-summary.json")"
   check keeper_probe_no_failures test "$(jq -r '.failures' "$RUN_DIR/probe-summary.json")" -eq 0
 
+  # A reboot clears /run (gv-ckpt's records) but not the data disk: every
+  # image left there is an orphan whose deadline is unknown. Simulated by
+  # moving the browser's record aside: one reap pass deletes its images.
+  orphan_sweep >"$RUN_DIR/orphans.json"
+  check reboot_orphans_reaped jq_ok '.created.code == "ok" and .before == [true, true]
+    and .after == [false, false] and .reap.code == "ok"' "$RUN_DIR/orphans.json"
+
   t=$(now); docker stop -t 10 "$B" >/dev/null; metric 'lifecycle_seconds{machine="restored",op="stop"}' "$(since "$t")"
   t=$(now); docker stop -t 10 "$G" >/dev/null; metric 'lifecycle_seconds{machine="guard",op="stop"}' "$(since "$t")"
   t=$(now); docker stop -t 10 "$K" >/dev/null; metric 'lifecycle_seconds{machine="keeper",op="stop"}' "$(since "$t")"
   cvm_sample all_stopped >/dev/null
   metric 'cvm_returned_bytes{via="all_roles_stopped"}' "$((cvm_idle - $(jq -r '.used' <<<"$(gvctl meminfo)")))"
+
+  # The reaper is supervised: killed, it comes back (eggomi-gv-reaper.service,
+  # Restart=always), so post-fill deadlines keep being enforced.
+  reaper_restarts >"$RUN_DIR/reaper.json"
+  check reaper_supervised jq_ok '.before > 0 and .after > 0 and .after != .before and .active == "active"' \
+    "$RUN_DIR/reaper.json"
+
+  # The ARC cap is in force, and the ARC stayed under it at every sample
+  # (64 MiB of slack: the ARC overshoots c_max briefly while it evicts).
+  local arc arc_peak
+  arc=$(arc_evidence)
+  printf '%s\n' "$arc" >"$RUN_DIR/arc.json"
+  arc_peak=$(awk '/^eggomi_s3_cvm_zfs_arc_bytes/ {if ($2 > m) m = $2} END {printf "%d", m}' "$PROM")
+  metric 'cvm_zfs_arc_max_bytes' "$(jq -r '.c_max' <<<"$arc")"
+  metric 'cvm_zfs_arc_peak_bytes' "$arc_peak"
+  check zfs_arc_capped jq_ok --argjson peak "$arc_peak" "($ARC_TEST) and \$peak <= .c_max + 67108864" "$RUN_DIR/arc.json"
 
   {
     printf '# Eggomi S3 gVisor sandbox lifecycle (L1, in the simulated-SNP CVM), runsc %s, systrap.\n' "$RUNSC_VERSION"
@@ -280,10 +373,17 @@ main() {
     --slurpfile reclaim "$RUN_DIR/reclaim.json" \
     --slurpfile limits "$RUN_DIR/limits.jsonl" \
     --slurpfile chromium "$RUN_DIR/chromium-sandbox.json" \
+    --slurpfile floor "$RUN_DIR/floor.json" \
+    --slurpfile arc "$RUN_DIR/arc.json" \
+    --slurpfile restore "$RUN_DIR/ckpt-restore.json" \
+    --slurpfile reaper "$RUN_DIR/reaper.json" \
+    --slurpfile orphans "$RUN_DIR/orphans.json" \
     --rawfile metrics "$METRICS" \
     '{schema: "eggomi-s3-report/v1", environment: "L1-gvisor", runsc: $version, platform: "systrap",
       run: $run, ok: ($failures | length == 0), failures: $failures, keeper_probe: $probe[0],
       memory_reclaim: $reclaim[0], limits: $limits, chromium_sandbox: $chromium[0].chromium,
+      cvm_floor: $floor[0], zfs_arc: $arc[0], restore: $restore[0], reaper: $reaper[0],
+      reboot_orphans: $orphans[0],
       metrics: $metrics}' >"$REPORT"
   log "metrics: $METRICS"
   if ((${#FAILURES[@]})); then
