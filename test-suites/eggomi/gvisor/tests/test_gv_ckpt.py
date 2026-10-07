@@ -11,6 +11,8 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -273,6 +275,250 @@ class GvCkptTest(unittest.TestCase):
         finally:
             gv_ckpt.DOCKER_TIMEOUT_SECONDS = saved
             del os.environ["FAKE_DOCKER_HANG"]
+
+    def test_reap_deletes_expired_images_before_any_docker_call(self) -> None:
+        """Expiry comes from the record files; a hung dockerd cannot delay it."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("create", "--reuse", "--leave-running", "browser", "pristine")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        self.run_cmd("create", "--leave-running", "browser", "suspend")
+        time.sleep(0.4)
+        seen = []
+        real = gv_ckpt.docker
+
+        def watching(*args: str, check: bool = True):
+            seen.append((args[:2], self.image("suspend").exists()))
+            return real(*args, check=check)
+
+        gv_ckpt.docker = watching
+        try:
+            rc, out = self.run_cmd("reap")
+        finally:
+            gv_ckpt.docker = real
+        self.assertEqual(rc, 0)
+        self.assertTrue(seen, "reap made no docker call at all")
+        self.assertFalse(seen[0][1], f"first docker call {seen[0][0]} saw the image")
+        self.assertFalse(self.image("suspend").exists())
+        self.assertTrue(self.image("pristine").exists())
+        self.assertEqual([r["name"] for r in out["reaped"]], ["suspend"])
+        state = json.loads(
+            (self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")).read_text()
+        )
+        self.assertEqual(sorted(state["checkpoints"]), ["pristine"])
+
+    def test_the_reaper_expires_on_disk_while_the_lock_is_held(self) -> None:
+        """A step stuck on dockerd holds the lock; the deadline still holds."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        self.run_cmd("create", "--leave-running", "browser", "suspend")
+        stop = threading.Event()
+        thread = threading.Thread(target=gv_ckpt.reap_loop, args=(0.1, stop))
+        out = io.StringIO()
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold() -> None:
+            with gv_ckpt.locked():
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(5)
+        try:
+            with contextlib.redirect_stdout(out):
+                thread.start()
+                deadline = time.time() + 3
+                while self.image("suspend").exists() and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(self.image("suspend").exists())
+        finally:
+            release.set()
+            holder.join(5)
+            stop.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def start_reaper(self, **extra: str) -> "subprocess.Popen[bytes]":
+        """Run the reaper as the CVM does: its own process, a short loop."""
+        env = dict(
+            os.environ,
+            **extra,
+            EGGOMI_GV_CKPT_STATE=str(gv_ckpt.STATE_DIR),
+            EGGOMI_GV_CKPT_DOCKER=gv_ckpt.DOCKER,
+            EGGOMI_GV_CKPT_DOCKER_ROOT=str(gv_ckpt.DOCKER_ROOT),
+            EGGOMI_GV_CKPT_STAGE=str(gv_ckpt.STAGE_DIR),
+        )
+        return subprocess.Popen(
+            [sys.executable, gv_ckpt.__file__, "reap", "--loop", "0.1"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def test_an_image_still_being_written_is_deleted_at_its_deadline(self) -> None:
+        """The record is published first, so a slow create cannot outlive it."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 600))
+        result = {}
+
+        def create() -> None:
+            result["out"] = self.run_cmd("create", "--leave-running", "browser", "s")
+
+        os.environ["FAKE_DOCKER_CREATE_AFTER"] = "2.5"
+        reaper = self.start_reaper()
+        try:
+            creator = threading.Thread(target=create)
+            creator.start()
+            deadline = time.time() + 1.0
+            while not self.image("s").exists() and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.image("s").exists(), "docker wrote the image")
+            deadline = time.time() + 2.0
+            while self.image("s").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            gone_while_writing = not self.image("s").exists()
+            still_writing = creator.is_alive()
+            creator.join(10)
+        finally:
+            del os.environ["FAKE_DOCKER_CREATE_AFTER"]
+            reaper.kill()
+            reaper.wait(5)
+        self.assertTrue(still_writing and gone_while_writing)
+        rc, reply = result["out"]
+        self.assertEqual((rc, reply["code"]), (3, "expired"))
+        self.assertFalse(self.image("s").exists())
+        state = json.loads(
+            (self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")).read_text()
+        )
+        self.assertEqual(state["checkpoints"], {})
+
+    def test_a_restore_that_outlives_the_deadline_says_so(self) -> None:
+        """The lockless pass deletes the image mid-restore; the reply reports it."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 400))
+        self.run_cmd("create", "--leave-running", "browser", "s")
+        self.set_running("browser", False)
+        os.environ["FAKE_DOCKER_RESTORE_AFTER"] = "1.0"
+        reaper = self.start_reaper()
+        try:
+            rc, reply = self.run_cmd("restore", "browser", "s")
+        finally:
+            del os.environ["FAKE_DOCKER_RESTORE_AFTER"]
+            reaper.kill()
+            reaper.wait(5)
+        self.assertEqual(rc, 0, reply)
+        self.assertTrue(reply.get("image_deleted_at_deadline"), reply)
+        self.assertFalse(self.image("s").exists())
+
+    def test_a_create_that_died_leaves_no_image(self) -> None:
+        """A pending record found under the lock is a dead create: reaped."""
+        self.run_cmd("arm", "browser")
+        state_path = self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")
+        state = json.loads(state_path.read_text())
+        state["checkpoints"]["half"] = {
+            "kind": "pristine",
+            "deadline_ms": None,
+            "created_ms": gv_ckpt.now_ms(),
+            "pending": True,
+        }
+        state_path.write_text(json.dumps(state))
+        self.image("half").mkdir(parents=True)
+        self.set_running("browser", False)
+        rc, out = self.run_cmd("restore", "browser", "half")
+        self.assertEqual((rc, out["code"]), (3, "incomplete"))
+        rc, out = self.run_cmd("reap")
+        self.assertEqual([r["name"] for r in out["reaped"]], ["half"])
+        self.assertFalse(self.image("half").exists())
+
+    def test_a_stopping_checkpoint_sets_the_restart_policy_aside(self) -> None:
+        """Without it dockerd restarts the container at once; restore puts it back."""
+        db = json.loads(self.db.read_text())
+        db["containers"]["browser"]["restart"] = "unless-stopped"
+        self.db.write_text(json.dumps(db))
+        log = self.tmp / "docker.log"
+        os.environ["FAKE_DOCKER_LOG"] = str(log)
+        try:
+            self.run_cmd("arm", "browser")
+            rc, out = self.run_cmd("create", "--reuse", "browser", "pristine")
+            self.assertEqual((rc, out["kind"]), (0, "pristine"))
+            db = json.loads(self.db.read_text())
+            self.assertFalse(db["containers"]["browser"]["running"])
+            self.assertEqual(db["containers"]["browser"]["restart"], "no")
+            rc, out = self.run_cmd("restore", "browser", "pristine")
+            self.assertEqual(rc, 0, out)
+            db = json.loads(self.db.read_text())
+            self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
+            self.assertEqual(
+                log.read_text().split(),
+                ["update", "--restart=no", "update", "--restart=unless-stopped"],
+            )
+        finally:
+            del os.environ["FAKE_DOCKER_LOG"]
+
+    def test_a_reaper_stuck_on_docker_still_meets_the_deadline(self) -> None:
+        """Every docker call of the reaper hangs; the deadline holds anyway."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 800))
+        self.run_cmd("create", "--leave-running", "browser", "s")
+        reaper = self.start_reaper(FAKE_DOCKER_HANG="6")
+        try:
+            deadline = time.time() + 2.5
+            while self.image("s").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(self.image("s").exists())
+        finally:
+            reaper.kill()
+            reaper.wait(5)
+
+    def test_a_lockless_deletion_spares_a_name_reused_meanwhile(self) -> None:
+        """The record is reread just before deleting: a new image is left alone."""
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 60_000))
+        self.run_cmd("create", "--leave-running", "browser", "s")
+        path = self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")
+        fresh = json.loads(path.read_text())["checkpoints"]["s"]
+        stale = dict(fresh, created_ms=fresh["created_ms"] - 5000, deadline_ms=1)
+        self.assertFalse(gv_ckpt.still_expired(path, "s", stale, gv_ckpt.now_ms()))
+        self.assertFalse(gv_ckpt.still_expired(path, "s", fresh, gv_ckpt.now_ms()))
+
+    def test_a_dead_create_gets_its_restart_policy_back(self) -> None:
+        """Killed after setting the policy aside: the reaper puts it back."""
+        self.run_cmd("arm", "browser")
+        db = json.loads(self.db.read_text())
+        db["containers"]["browser"]["restart"] = "no"
+        self.db.write_text(json.dumps(db))
+        path = self.tmp / "state" / ("c0ffee" * 10 + "abcd.json")
+        state = json.loads(path.read_text())
+        state["checkpoints"]["half"] = {
+            "kind": "pristine",
+            "deadline_ms": None,
+            "created_ms": gv_ckpt.now_ms(),
+            "pending": True,
+            "restart": "unless-stopped",
+        }
+        path.write_text(json.dumps(state))
+        rc, _ = self.run_cmd("reap")
+        self.assertEqual(rc, 0)
+        db = json.loads(self.db.read_text())
+        self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
+
+    def test_an_expired_stopping_checkpoint_gives_the_policy_back(self) -> None:
+        """An image that is gone will not be restored: the policy returns."""
+        db = json.loads(self.db.read_text())
+        db["containers"]["browser"]["restart"] = "unless-stopped"
+        self.db.write_text(json.dumps(db))
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        rc, out = self.run_cmd("create", "browser", "suspend")
+        self.assertEqual((rc, out["kind"]), (0, "post_fill"))
+        db = json.loads(self.db.read_text())
+        self.assertEqual(db["containers"]["browser"]["restart"], "no")
+        time.sleep(0.4)
+        rc, out = self.run_cmd("reap")
+        self.assertEqual([r["name"] for r in out["reaped"]], ["suspend"])
+        db = json.loads(self.db.read_text())
+        self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
 
     def test_reap_deletes_every_image_left_over_from_before_a_reboot(self) -> None:
         """A cleared /run leaves images with no record; one pass deletes them."""

@@ -339,8 +339,14 @@ inlined into the init script when gvisor-lab.sh renders it, and installed as
 systemd service, `eggomi-gv-reaper.service`, with `Restart=always` and no
 start-rate limit, so a kill or the OOM killer does not end it; S3'
 `reaper_supervised` kills it and requires a new main process within 10 s.
-The reaper drops a container's policy state only when dockerd answers "No
-such container". If dockerd does not answer (restarting, unreachable, or
+Deadlines come first and need no docker: each pass deletes every post-fill
+image past its deadline straight from disk, reading only the record files,
+before it makes any docker call, and the reaper repeats that pass every
+0.2 s while another step holds the policy lock. So a hung dockerd (each call
+waits up to 120 s) or a checkpoint stuck on it cannot keep an image past its
+deadline (eggomi#780's last P1). Every deletion removes the directory before
+it tells dockerd. The reaper drops a container's policy state only when
+dockerd answers "No such container". If dockerd does not answer (restarting, unreachable, or
 past the 120 s docker timeout), it keeps the state, still enforces the
 deadlines on the image files, and retries on its next pass. Its state is in
 tmpfs, so `arm` also
@@ -350,7 +356,14 @@ the deadlines every 0.2 s (state files only), so a deadline added meanwhile
 is not missed. A checkpoint or
 restore holds the policy lock for seconds, so each one reaps once more before
 it releases the lock: a deadline that passes meanwhile is enforced at once,
-on the step's own image too. A release's
+on the step's own image too. A checkpoint taken without
+`--leave-running` stops the sandbox, and dockerd's restart policy would start
+the container afresh at once (measured in the eggomi release's lab CVM), so
+`create` sets the policy to `no` first and `restore` puts it back. That is
+also the only way to checkpoint a browser whose profile is a volume: a
+restore needs every file the sandbox held open to be as it was, and a browser
+that goes on running or stops cleanly rewrites its profile (measured: "failed
+to walk Default/DIPS-wal"). A release's
 launcher calls `gv-ckpt` instead of `docker checkpoint` and `docker start
 --checkpoint`. A raw Docker checkpoint does not get past `restore`, which
 refuses images it did not record. The reaper deletes every checkpoint it has

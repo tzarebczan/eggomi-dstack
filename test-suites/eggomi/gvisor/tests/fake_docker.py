@@ -60,6 +60,12 @@ def main(argv: list) -> int:
             "Id": c["id"],
             "Created": c["created"],
             "State": {"StartedAt": c["started"], "Running": c["running"]},
+            "HostConfig": {
+                "RestartPolicy": {
+                    "Name": c.get("restart", "no"),
+                    "MaximumRetryCount": 0,
+                }
+            },
         }
         print(json.dumps([out]))
         return 0
@@ -69,8 +75,21 @@ def main(argv: list) -> int:
         d = ROOT / "containers" / c["id"] / "checkpoints" / args[1]
         d.mkdir(parents=True)
         (d / "pages.img").write_bytes(b"memory image " + args[1].encode())
+        # A checkpoint whose image is on disk but whose docker call has not
+        # returned yet (dockerd slow or hung).
+        time.sleep(float(os.environ.get("FAKE_DOCKER_CREATE_AFTER", "0")))
         if "--leave-running" not in argv:
             c["running"] = False
+            if c.get("restart", "no") != "no":
+                # dockerd's restart policy brings a checkpointed container
+                # straight back, fresh, as it did in the lab CVM.
+                c["running"] = True
+                c["started"] = stamp()
+    elif argv[0] == "update" and argv[1].startswith("--restart="):
+        c = find(argv[2])
+        c["restart"] = argv[1].split("=", 1)[1]
+        with open(os.environ.get("FAKE_DOCKER_LOG", os.devnull), "a") as log:
+            log.write(f"update {argv[1]}\n")
     elif argv[:2] == ["checkpoint", "rm"]:
         c = find(argv[2])
         shutil.rmtree(
@@ -85,6 +104,8 @@ def main(argv: list) -> int:
             return 1
         stage = Path(tempfile.mkdtemp(prefix="ctrd-checkpoint", dir=STAGE))
         shutil.copytree(src, stage / "image")
+        # Staged, not yet returned: a slow restore.
+        time.sleep(float(os.environ.get("FAKE_DOCKER_RESTORE_AFTER", "0")))
         c["running"] = True
         c["started"] = stamp()
     else:

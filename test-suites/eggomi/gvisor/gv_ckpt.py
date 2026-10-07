@@ -147,11 +147,16 @@ def inspect(ctr: str) -> Dict[str, Any]:
     if proc.returncode != 0:
         raise Refused("no_such_container", container=ctr)
     info = json.loads(proc.stdout)[0]
+    policy = (info.get("HostConfig") or {}).get("RestartPolicy") or {}
+    restart = policy.get("Name") or "no"
+    if restart == "on-failure" and policy.get("MaximumRetryCount"):
+        restart = f"on-failure:{policy['MaximumRetryCount']}"
     return {
         "cid": info["Id"],
         "run": info["State"]["StartedAt"],
         "running": bool(info["State"]["Running"]),
         "created": parse_time(info["Created"]),
+        "restart": restart,
     }
 
 
@@ -206,11 +211,77 @@ def tree_bytes(path: Path) -> int:
 
 
 def delete_checkpoint(ctr: str, cid: str, name: str) -> bool:
-    """Remove a checkpoint through dockerd, then from disk. True if gone."""
-    docker("checkpoint", "rm", ctr, name, check=False)
+    """Remove a checkpoint from disk, then tell dockerd. True if gone.
+
+    The disk first: dockerd lists checkpoints from these directories, so
+    the image is gone once its directory is, and a docker call that hangs
+    (dockerd restarting) cannot keep it alive past its deadline.
+    """
     target = checkpoint_dir(cid, name)
     shutil.rmtree(target, ignore_errors=True)
+    docker("checkpoint", "rm", ctr, name, check=False)
     return not target.exists()
+
+
+def expire_on_disk(now: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Delete every post-fill image past its deadline, from the records alone.
+
+    No docker call and no state write, so it runs before anything that can
+    hang, and without the policy lock: a checkpoint or restore that holds
+    the lock while dockerd hangs cannot delay a deadline. The records drop
+    the reaped entries later, under the lock (reap_once).
+    """
+    now = now_ms() if now is None else now
+    reaped: List[Dict[str, Any]] = []
+    for path in sorted(STATE_DIR.glob("*.json")):
+        try:
+            state = json.loads(path.read_text("utf-8"))
+            cid, records = state["cid"], state["checkpoints"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        for name, record in sorted(records.items()):
+            if record.get("kind") != "post_fill" or record.get("deadline_ms") is None:
+                continue
+            if record["deadline_ms"] > now or not NAME_RE.match(name):
+                continue
+            target = checkpoint_dir(cid, name)
+            if not target.exists() or not still_expired(path, name, record, now):
+                continue
+            shutil.rmtree(target, ignore_errors=True)
+            reaped.append(
+                {"cid": cid[:12], "name": name, "deleted": not target.exists()}
+            )
+    return reaped
+
+
+def still_expired(path: Path, name: str, record: Dict[str, Any], now: int) -> bool:
+    """Reread the record just before a lockless deletion.
+
+    The pass holds no lock, so between its read and the deletion an ``rm``
+    and a new ``create`` may reuse the name for a fresh image: that one has
+    another ``created_ms`` (and deadline), and is left alone.
+    """
+    try:
+        current = json.loads(path.read_text("utf-8"))["checkpoints"].get(name)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return (
+        current is not None
+        and current.get("created_ms") == record.get("created_ms")
+        and current.get("deadline_ms") is not None
+        and current["deadline_ms"] <= now
+    )
+
+
+def drop_record(state: Dict[str, Any], cid: str, name: str) -> None:
+    """Forget a checkpoint and give back the restart policy it set aside.
+
+    An image that is gone will not be restored, so its container keeps its
+    own policy again.
+    """
+    record = state["checkpoints"].pop(name)
+    if record.get("restart"):
+        docker("update", f"--restart={record['restart']}", cid, check=False)
 
 
 def check_name(name: str) -> None:
@@ -282,18 +353,46 @@ def cmd_create(ctr: str, name: str, reuse: bool, leave_running: bool) -> Dict[st
         + (["--leave-running"] if leave_running else [])
         + [ctr, name]
     )
+    # The record, deadline included, is published before docker writes the
+    # image: the lockless expiry pass (expire_on_disk) can then delete an
+    # image whose deadline passes while docker is still writing it or hung.
+    record = {
+        "kind": kind,
+        "deadline_ms": deadline,
+        "created_ms": now_ms(),
+        "pending": True,
+    }
+    # A checkpoint that stops the sandbox must not be undone by the restart
+    # policy: dockerd would start the container afresh at once (measured in
+    # the eggomi release's lab CVM), and the image could not be restored into
+    # it. The policy is set aside until the restore puts it back.
+    if not leave_running and info["restart"] != "no":
+        record["restart"] = info["restart"]
+    # Saved before the policy changes, so a create killed after it leaves a
+    # record from which the reaper restores the policy.
+    state["checkpoints"][name] = record
+    save(state)
+    if "restart" in record:
+        docker("update", "--restart=no", ctr)
     start = time.monotonic()
     proc = docker(*args, check=False)
     if proc.returncode != 0:
         delete_checkpoint(ctr, info["cid"], name)
+        del state["checkpoints"][name]
+        save(state)
+        if "restart" in record:
+            docker("update", f"--restart={record['restart']}", ctr, check=False)
         raise RuntimeError(
             f"docker checkpoint create failed: {proc.stderr.strip()[:400]}"
         )
-    state["checkpoints"][name] = {
-        "kind": kind,
-        "deadline_ms": deadline,
-        "created_ms": now_ms(),
-    }
+    if deadline is not None and deadline <= now_ms():
+        gone = delete_checkpoint(ctr, info["cid"], name)
+        drop_record(state, info["cid"], name)
+        save(state)
+        raise Refused(
+            "expired", deleted=gone, detail="the session expired while checkpointing"
+        )
+    state["checkpoints"][name].pop("pending")
     save(state)
     return {
         "code": "ok",
@@ -315,9 +414,11 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         raise Refused(
             "unknown_checkpoint", detail="not created by gv-ckpt; never restored"
         )
+    if record.get("pending"):
+        raise Refused("incomplete", detail="its checkpoint never finished")
     if record["kind"] == "post_fill" and record["deadline_ms"] <= now_ms():
         gone = delete_checkpoint(ctr, info["cid"], name)
-        del state["checkpoints"][name]
+        drop_record(state, info["cid"], name)
         save(state)
         raise Refused("expired", deleted=gone)
     before = set(staged_copies())
@@ -333,6 +434,15 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         raise RuntimeError(
             f"docker start --checkpoint failed: {proc.stderr.strip()[:400]}"
         )
+    if record.get("restart"):
+        docker("update", f"--restart={record['restart']}", ctr, check=False)
+    # The deadline may have passed while docker restored (the reaper's
+    # lockless pass may already have deleted the image): enforce it on the
+    # record here, so the reply says so whichever pass deleted it.
+    expired_now = record["kind"] == "post_fill" and record["deadline_ms"] <= now_ms()
+    if expired_now:
+        delete_checkpoint(ctr, info["cid"], name)
+        del state["checkpoints"][name]
     after = inspect(ctr)
     if record["kind"] == "pristine":
         state.update(run=after["run"], pristine=True, fill_deadline_ms=None)
@@ -343,7 +453,7 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
     save(state)
     if residue:
         raise RuntimeError(f"{residue} staged restore copies could not be removed")
-    return {
+    out = {
         "code": "ok",
         "kind": record["kind"],
         "seconds": seconds,
@@ -351,6 +461,11 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         "staged_bytes": staged_bytes,
         "residue": residue,
     }
+    if expired_now:
+        # The browser is restored; its session is past its TTL, and its
+        # image is gone.
+        out["image_deleted_at_deadline"] = True
+    return out
 
 
 def cmd_rm(ctr: str, name: str) -> Dict[str, Any]:
@@ -376,9 +491,36 @@ def reap_once() -> Dict[str, Any]:
     under the policy lock, like ``create``, so an image being written is
     never taken for an orphan.
     """
-    reaped: List[Dict[str, Any]] = []
     unknown: List[str] = []
     now = now_ms()
+    # Deadlines first, from the record files, before any docker call: a hung
+    # dockerd answers each call only after DOCKER_TIMEOUT_SECONDS, and an
+    # expired image must not wait for that (eggomi#780).
+    reaped: List[Dict[str, Any]] = expire_on_disk(now)
+    for path in sorted(STATE_DIR.glob("*.json")):
+        state = json.loads(path.read_text("utf-8"))
+        cid = state["cid"]
+        changed = False
+        for name, record in list(state["checkpoints"].items()):
+            if record.get("pending"):
+                # This runs under the lock, so no create is in flight: a
+                # pending record is one whose create died. Its image, if any,
+                # is incomplete and unaccounted for, and the restart policy
+                # it set aside goes back.
+                shutil.rmtree(checkpoint_dir(cid, name), ignore_errors=True)
+                if record.get("restart"):
+                    docker("update", f"--restart={record['restart']}", cid, check=False)
+                reaped.append(
+                    {"cid": cid[:12], "name": name, "deleted": True, "incomplete": True}
+                )
+                del state["checkpoints"][name]
+                changed = True
+            elif record["kind"] == "post_fill" and record["deadline_ms"] <= now:
+                if not checkpoint_dir(cid, name).exists():
+                    drop_record(state, cid, name)
+                    changed = True
+        if changed:
+            save(state)
     for path in sorted(STATE_DIR.glob("*.json")):
         state = json.loads(path.read_text("utf-8"))
         cid = state["cid"]
@@ -410,7 +552,7 @@ def reap_once() -> Dict[str, Any]:
                 gone = delete_checkpoint(cid, cid, name)
                 reaped.append({"cid": cid[:12], "name": name, "deleted": gone})
                 if gone:
-                    del state["checkpoints"][name]
+                    drop_record(state, cid, name)
                     changed = True
         if changed:
             save(state)
@@ -480,6 +622,23 @@ def next_deadline_s() -> Optional[float]:
 DEADLINE_POLL_SECONDS = 0.2
 
 
+def expire_and_report() -> None:
+    """Run the reaper's lockless deadline pass; print what it reaped."""
+    reaped = expire_on_disk()
+    if reaped:
+        print(json.dumps({"code": "ok", "reaped": reaped}), flush=True)
+
+
+def expiry_watch(stop: threading.Event) -> None:
+    """Run the lockless deadline pass every DEADLINE_POLL_SECONDS until stopped."""
+    while not stop.is_set():
+        try:
+            expire_and_report()
+        except Exception as exc:  # noqa: BLE001 - the watch must keep running
+            print(json.dumps({"code": "error", "message": str(exc)[:400]}), flush=True)
+        stop.wait(DEADLINE_POLL_SECONDS)
+
+
 def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
     """Reap until killed: at each deadline, and every INTERVAL otherwise.
 
@@ -488,6 +647,11 @@ def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
     ``stop`` ends the loop (tests); the CVM's reaper runs until killed.
     """
     stop = stop or threading.Event()
+    # Deadlines on their own thread: the reap pass below makes docker calls
+    # that can each hang for DOCKER_TIMEOUT_SECONDS, and neither those nor a
+    # step holding the lock may hold back a deadline.
+    watch = threading.Thread(target=expiry_watch, args=(stop,), daemon=True)
+    watch.start()
     while not stop.is_set():
         try:
             with locked():
