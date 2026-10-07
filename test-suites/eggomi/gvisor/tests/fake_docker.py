@@ -69,6 +69,9 @@ def main(argv: list) -> int:
         d = ROOT / "containers" / c["id"] / "checkpoints" / args[1]
         d.mkdir(parents=True)
         (d / "pages.img").write_bytes(b"memory image " + args[1].encode())
+        # A checkpoint whose image is on disk but whose docker call has not
+        # returned yet (dockerd slow or hung).
+        time.sleep(float(os.environ.get("FAKE_DOCKER_CREATE_AFTER", "0")))
         if "--leave-running" not in argv:
             c["running"] = False
     elif argv[:2] == ["checkpoint", "rm"]:
@@ -85,6 +88,8 @@ def main(argv: list) -> int:
             return 1
         stage = Path(tempfile.mkdtemp(prefix="ctrd-checkpoint", dir=STAGE))
         shutil.copytree(src, stage / "image")
+        # Staged, not yet returned: a slow restore.
+        time.sleep(float(os.environ.get("FAKE_DOCKER_RESTORE_AFTER", "0")))
         c["running"] = True
         c["started"] = stamp()
     else:

@@ -332,18 +332,33 @@ def cmd_create(ctr: str, name: str, reuse: bool, leave_running: bool) -> Dict[st
         + (["--leave-running"] if leave_running else [])
         + [ctr, name]
     )
-    start = time.monotonic()
-    proc = docker(*args, check=False)
-    if proc.returncode != 0:
-        delete_checkpoint(ctr, info["cid"], name)
-        raise RuntimeError(
-            f"docker checkpoint create failed: {proc.stderr.strip()[:400]}"
-        )
+    # The record, deadline included, is published before docker writes the
+    # image: the lockless expiry pass (expire_on_disk) can then delete an
+    # image whose deadline passes while docker is still writing it or hung.
     state["checkpoints"][name] = {
         "kind": kind,
         "deadline_ms": deadline,
         "created_ms": now_ms(),
+        "pending": True,
     }
+    save(state)
+    start = time.monotonic()
+    proc = docker(*args, check=False)
+    if proc.returncode != 0:
+        delete_checkpoint(ctr, info["cid"], name)
+        del state["checkpoints"][name]
+        save(state)
+        raise RuntimeError(
+            f"docker checkpoint create failed: {proc.stderr.strip()[:400]}"
+        )
+    if deadline is not None and deadline <= now_ms():
+        gone = delete_checkpoint(ctr, info["cid"], name)
+        del state["checkpoints"][name]
+        save(state)
+        raise Refused(
+            "expired", deleted=gone, detail="the session expired while checkpointing"
+        )
+    state["checkpoints"][name].pop("pending")
     save(state)
     return {
         "code": "ok",
@@ -365,6 +380,8 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         raise Refused(
             "unknown_checkpoint", detail="not created by gv-ckpt; never restored"
         )
+    if record.get("pending"):
+        raise Refused("incomplete", detail="its checkpoint never finished")
     if record["kind"] == "post_fill" and record["deadline_ms"] <= now_ms():
         gone = delete_checkpoint(ctr, info["cid"], name)
         del state["checkpoints"][name]
@@ -383,6 +400,13 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         raise RuntimeError(
             f"docker start --checkpoint failed: {proc.stderr.strip()[:400]}"
         )
+    # The deadline may have passed while docker restored (the reaper's
+    # lockless pass may already have deleted the image): enforce it on the
+    # record here, so the reply says so whichever pass deleted it.
+    expired_now = record["kind"] == "post_fill" and record["deadline_ms"] <= now_ms()
+    if expired_now:
+        delete_checkpoint(ctr, info["cid"], name)
+        del state["checkpoints"][name]
     after = inspect(ctr)
     if record["kind"] == "pristine":
         state.update(run=after["run"], pristine=True, fill_deadline_ms=None)
@@ -393,7 +417,7 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
     save(state)
     if residue:
         raise RuntimeError(f"{residue} staged restore copies could not be removed")
-    return {
+    out = {
         "code": "ok",
         "kind": record["kind"],
         "seconds": seconds,
@@ -401,6 +425,11 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         "staged_bytes": staged_bytes,
         "residue": residue,
     }
+    if expired_now:
+        # The browser is restored; its session is past its TTL, and its
+        # image is gone.
+        out["image_deleted_at_deadline"] = True
+    return out
 
 
 def cmd_rm(ctr: str, name: str) -> Dict[str, Any]:
@@ -437,7 +466,17 @@ def reap_once() -> Dict[str, Any]:
         cid = state["cid"]
         changed = False
         for name, record in list(state["checkpoints"].items()):
-            if record["kind"] == "post_fill" and record["deadline_ms"] <= now:
+            if record.get("pending"):
+                # This runs under the lock, so no create is in flight: a
+                # pending record is one whose create died. Its image, if any,
+                # is incomplete and unaccounted for.
+                shutil.rmtree(checkpoint_dir(cid, name), ignore_errors=True)
+                reaped.append(
+                    {"cid": cid[:12], "name": name, "deleted": True, "incomplete": True}
+                )
+                del state["checkpoints"][name]
+                changed = True
+            elif record["kind"] == "post_fill" and record["deadline_ms"] <= now:
                 if not checkpoint_dir(cid, name).exists():
                     del state["checkpoints"][name]
                     changed = True
