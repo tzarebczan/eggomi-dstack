@@ -47,6 +47,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -382,7 +383,7 @@ def reap_once() -> Dict[str, Any]:
     return {"code": "ok", "reaped": reaped, "stale_stage_removed": stale}
 
 
-def after_deadline_check(out: Dict[str, Any], name: str) -> Dict[str, Any]:
+def after_deadline_check(out: Dict[str, Any], ctr: str, name: str) -> Dict[str, Any]:
     """Reap once more before the lock is released.
 
     A checkpoint or restore holds the lock for seconds, and a post-fill
@@ -392,7 +393,8 @@ def after_deadline_check(out: Dict[str, Any], name: str) -> Dict[str, Any]:
     """
     reaped = reap_once()["reaped"]
     out["reaped"] = reaped
-    own = any(r["name"] == name and r["deleted"] for r in reaped)
+    cid = inspect(ctr)["cid"][:12]
+    own = any(r["cid"] == cid and r["name"] == name and r["deleted"] for r in reaped)
     if own and out.get("code") == "ok":
         if "staged_copies_removed" in out:
             # The browser is restored; its session is past its TTL.
@@ -415,9 +417,20 @@ def next_deadline_s() -> Optional[float]:
     return max(0.0, (min(deadlines) - now_ms()) / 1000)
 
 
-def reap_loop(interval: float) -> None:
-    """Reap until killed; wake at the next deadline or every INTERVAL."""
-    while True:
+# How often the sleeping reaper rereads the deadlines (state files only, no
+# docker call), so a deadline added while it sleeps is not missed.
+DEADLINE_POLL_SECONDS = 0.2
+
+
+def reap_loop(interval: float, stop: Optional[threading.Event] = None) -> None:
+    """Reap until killed: at each deadline, and every INTERVAL otherwise.
+
+    The sleep is cut into short slices that reread the deadlines, so a
+    post-fill image created while the reaper sleeps is reaped on time.
+    ``stop`` ends the loop (tests); the CVM's reaper runs until killed.
+    """
+    stop = stop or threading.Event()
+    while not stop.is_set():
         try:
             with locked():
                 out = reap_once()
@@ -425,12 +438,18 @@ def reap_loop(interval: float) -> None:
                 print(json.dumps(out), flush=True)
         except Exception as exc:  # noqa: BLE001 - the reaper must keep running
             print(json.dumps({"code": "error", "message": str(exc)[:400]}), flush=True)
-        wait = interval
-        with contextlib.suppress(OSError):
-            nearest = next_deadline_s()
+        slept = 0.0
+        while slept < interval and not stop.is_set():
+            nearest = None
+            with contextlib.suppress(OSError):
+                nearest = next_deadline_s()
+            if nearest is not None and nearest <= 0:
+                break
+            step = DEADLINE_POLL_SECONDS
             if nearest is not None:
-                wait = min(interval, nearest + 0.05)
-        time.sleep(max(wait, 0.05))
+                step = min(step, nearest + 0.01)
+            time.sleep(step)
+            slept += step
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -470,10 +489,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 out = cmd_create(
                     args.container, args.name, args.reuse, args.leave_running
                 )
-                out = after_deadline_check(out, args.name)
+                out = after_deadline_check(out, args.container, args.name)
             elif args.cmd == "restore":
                 out = cmd_restore(args.container, args.name)
-                out = after_deadline_check(out, args.name)
+                out = after_deadline_check(out, args.container, args.name)
             elif args.cmd == "rm":
                 out = cmd_rm(args.container, args.name)
             elif args.cmd == "reap":

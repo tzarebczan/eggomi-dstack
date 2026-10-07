@@ -337,7 +337,9 @@ booted without it. The suites no longer install anything of their own.
 inlined into the init script when gvisor-lab.sh renders it, and installed as
 `/run/eggomi/bin/gv-ckpt` (root only). Its state is in tmpfs, so `arm` also
 refuses a container that was created before the current boot. The reaper
-wakes at the next deadline, or every 5 s at the latest. A checkpoint or
+reaps at each deadline and every 5 s otherwise. While it sleeps it rereads
+the deadlines every 0.2 s (state files only), so a deadline added meanwhile
+is not missed. A checkpoint or
 restore holds the policy lock for seconds, so each one reaps once more before
 it releases the lock: a deadline that passes meanwhile is enforced at once,
 on the step's own image too. A release's
@@ -349,13 +351,13 @@ docker CLI: `test-suites/eggomi/scripts/gvisor-unit-tests.sh`.
 
 Lab runs on 2026-10-07. A fresh CVM, `eggomi-gvisor-780`, was booted with
 the hardened init script beside the standing lab CVM, which was left alone.
-It was redeployed for each revision of the script: three runs, and the last
-one is on this PR's final code. Ranges below cover all three runs.
+It was redeployed for each revision of the script: four runs, and the last
+one is on this PR's final code. Ranges below cover all four runs.
 
 - The boot log shows each step: `ZFS ARC capped at 388786688 bytes` and
   `gv-ckpt installed; reaper running`. `iptables -S` shows `-A INPUT -j
   EGGOMI-FLOOR` as the first rule, and the same chain exists under ip6tables.
-- S3' passed every check: 19/19 in the last two runs, 18/18 in the first,
+- S3' passed every check: 19/19 in the last three runs, 18/18 in the first,
   before `browser_never_filled` was added. Seven checks are new:
   `cvm_floor_measured`, `browser_armed_pristine`, `browser_never_filled`,
   `checkpoint_via_policy`, `restore_staged_copy_seen`,
@@ -365,10 +367,10 @@ one is on this PR's final code. Ranges below cover all three runs.
   cold CVM.
 - S4' passed: 14/14 cases, 9/9 boundary checks, and 8/8 policy checks.
   Every leak search found 0 hits, and each positive control hit: canary
-  128-133, filled token 6-7, secret on the keeper volume 1. After the fill,
+  128-134, filled token 6-7, secret on the keeper volume 1. After the fill,
   `create --reuse` was refused (`not_pristine`) and wrote no image. Both
   restores left no copy in `/tmp`; `gv-ckpt` removed 153-155 MB and
-  142-144 MB. Both post-fill images were gone 1.45 to 1.49 s after the
+  142-144 MB. Both post-fill images were gone 1.44 to 1.49 s after the
   session expired. That is an upper bound: the suite first looks after its
   post-expiry redeem. A restore of the reaped image was refused
   (`unknown_checkpoint`), and the pristine image restored and answered
@@ -383,7 +385,7 @@ one is on this PR's final code. Ranges below cover all three runs.
   gateway's `:8090` and `:22`. The suites left that CVM as they found it.
 - With the cap of 389 MB, the ARC peaked at 393 to 410 MB, against 865 MB
   before. The check allows 64 MiB of overshoot while the ARC evicts. The CVM
-  used 1,046 to 1,060 MB idle and 1,427 to 1,469 MB active, against 1,453
+  used 1,046 to 1,080 MB idle and 1,427 to 1,469 MB active, against 1,453
   and 1,837 MB before. The host-side QEMU RSS peaked at 2.8 to 3.2 GB,
   against 4.0 GB.
 

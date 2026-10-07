@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -160,6 +161,28 @@ class GvCkptTest(unittest.TestCase):
         finally:
             del os.environ["FAKE_DOCKER_RESTORE_DELAY"]
         self.assertEqual((rc, out["image_deleted_at_deadline"]), (0, True))
+        self.assertFalse(self.image("suspend").exists())
+
+    def test_the_sleeping_reaper_sees_a_deadline_added_later(self) -> None:
+        """A post-fill image created while the reaper sleeps is reaped on time."""
+        stop = threading.Event()
+        thread = threading.Thread(target=gv_ckpt.reap_loop, args=(60.0, stop))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            thread.start()
+            try:
+                time.sleep(0.3)  # the reaper has reaped once and is sleeping
+                self.run_cmd("arm", "browser")
+                self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 400))
+                self.run_cmd("create", "--leave-running", "browser", "suspend")
+                self.assertTrue(self.image("suspend").exists())
+                deadline = time.time() + 3
+                while self.image("suspend").exists() and time.time() < deadline:
+                    time.sleep(0.05)
+            finally:
+                stop.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
         self.assertFalse(self.image("suspend").exists())
 
     def test_a_suspend_restored_before_expiry_keeps_the_deadline(self) -> None:
