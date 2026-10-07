@@ -503,6 +503,23 @@ class GvCkptTest(unittest.TestCase):
         db = json.loads(self.db.read_text())
         self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
 
+    def test_an_expired_stopping_checkpoint_gives_the_policy_back(self) -> None:
+        """An image that is gone will not be restored: the policy returns."""
+        db = json.loads(self.db.read_text())
+        db["containers"]["browser"]["restart"] = "unless-stopped"
+        self.db.write_text(json.dumps(db))
+        self.run_cmd("arm", "browser")
+        self.run_cmd("filled", "browser", str(gv_ckpt.now_ms() + 300))
+        rc, out = self.run_cmd("create", "browser", "suspend")
+        self.assertEqual((rc, out["kind"]), (0, "post_fill"))
+        db = json.loads(self.db.read_text())
+        self.assertEqual(db["containers"]["browser"]["restart"], "no")
+        time.sleep(0.4)
+        rc, out = self.run_cmd("reap")
+        self.assertEqual([r["name"] for r in out["reaped"]], ["suspend"])
+        db = json.loads(self.db.read_text())
+        self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
+
     def test_reap_deletes_every_image_left_over_from_before_a_reboot(self) -> None:
         """A cleared /run leaves images with no record; one pass deletes them."""
         self.run_cmd("arm", "browser")

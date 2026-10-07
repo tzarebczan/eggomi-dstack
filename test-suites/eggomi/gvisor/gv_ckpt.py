@@ -273,6 +273,17 @@ def still_expired(path: Path, name: str, record: Dict[str, Any], now: int) -> bo
     )
 
 
+def drop_record(state: Dict[str, Any], cid: str, name: str) -> None:
+    """Forget a checkpoint and give back the restart policy it set aside.
+
+    An image that is gone will not be restored, so its container keeps its
+    own policy again.
+    """
+    record = state["checkpoints"].pop(name)
+    if record.get("restart"):
+        docker("update", f"--restart={record['restart']}", cid, check=False)
+
+
 def check_name(name: str) -> None:
     """Checkpoint names are plain path components."""
     if not NAME_RE.match(name):
@@ -376,7 +387,7 @@ def cmd_create(ctr: str, name: str, reuse: bool, leave_running: bool) -> Dict[st
         )
     if deadline is not None and deadline <= now_ms():
         gone = delete_checkpoint(ctr, info["cid"], name)
-        del state["checkpoints"][name]
+        drop_record(state, info["cid"], name)
         save(state)
         raise Refused(
             "expired", deleted=gone, detail="the session expired while checkpointing"
@@ -407,7 +418,7 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         raise Refused("incomplete", detail="its checkpoint never finished")
     if record["kind"] == "post_fill" and record["deadline_ms"] <= now_ms():
         gone = delete_checkpoint(ctr, info["cid"], name)
-        del state["checkpoints"][name]
+        drop_record(state, info["cid"], name)
         save(state)
         raise Refused("expired", deleted=gone)
     before = set(staged_copies())
@@ -506,7 +517,7 @@ def reap_once() -> Dict[str, Any]:
                 changed = True
             elif record["kind"] == "post_fill" and record["deadline_ms"] <= now:
                 if not checkpoint_dir(cid, name).exists():
-                    del state["checkpoints"][name]
+                    drop_record(state, cid, name)
                     changed = True
         if changed:
             save(state)
@@ -541,7 +552,7 @@ def reap_once() -> Dict[str, Any]:
                 gone = delete_checkpoint(cid, cid, name)
                 reaped.append({"cid": cid[:12], "name": name, "deleted": gone})
                 if gone:
-                    del state["checkpoints"][name]
+                    drop_record(state, cid, name)
                     changed = True
         if changed:
             save(state)
