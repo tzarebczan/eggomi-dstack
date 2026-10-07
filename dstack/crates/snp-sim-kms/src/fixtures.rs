@@ -284,7 +284,34 @@ pub fn check_fixture_set(set: &Value) -> Result<()> {
                 && field(&["v2", "releases", name, "nonce"])? == hex::encode(nonce),
             "v2.releases.{name} labels do not match its record"
         );
+        // The quote the release was decided on: under the ARK, for this
+        // release's report_data and the enrolled measurement.
+        let evidence: SimEvidence =
+            serde_json::from_str(field(&["v2", "releases", name, "evidence"])?)?;
+        let verified = crate::verify_under_ark(ark, &evidence, &release.report_data)
+            .with_context(|| format!("v2.releases.{name}.evidence"))?;
+        ensure!(
+            verified.measurement == FIXTURE_MEASUREMENT
+                && release.measurement == FIXTURE_MEASUREMENT,
+            "v2.releases.{name}.evidence names another measurement"
+        );
         keys.push(release.key);
+    }
+    // The v1 releases' quotes, for each app's v1 report_data.
+    for (name, app, measurement) in [
+        ("app_a", APP_A, FIXTURE_MEASUREMENT),
+        ("app_b", APP_B, FIXTURE_MEASUREMENT),
+        ("app_a_onboarded", APP_A, FIXTURE_MEASUREMENT),
+        ("unlisted", APP_A, FIXTURE_UNLISTED_MEASUREMENT),
+    ] {
+        let evidence: SimEvidence =
+            serde_json::from_str(field(&["v1", "releases", name, "evidence"])?)?;
+        let verified = crate::verify_under_ark(ark, &evidence, &app_report_data(app))
+            .with_context(|| format!("v1.releases.{name}.evidence"))?;
+        ensure!(
+            verified.measurement == measurement,
+            "v1.releases.{name}.evidence names another measurement"
+        );
     }
     ensure!(
         keys[0] == keys[2],
@@ -334,6 +361,14 @@ mod tests {
         let mut release: SignedAppKeyRelease = serde_json::from_str(&record).unwrap();
         release.nonce = NONCE_STALE.to_vec();
         set["v2"]["releases"]["app_b"]["record"] = json!(serde_json::to_string(&release).unwrap());
+        assert!(check_fixture_set(&set).is_err());
+    }
+
+    #[test]
+    fn a_swapped_release_quote_is_refused() {
+        let mut set = fixture_set([0x11; 32]).unwrap();
+        let other = set["v2"]["releases"]["app_b"]["evidence"].clone();
+        set["v2"]["releases"]["app_a"]["evidence"] = other;
         assert!(check_fixture_set(&set).is_err());
     }
 

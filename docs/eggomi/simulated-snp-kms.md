@@ -94,7 +94,8 @@ Every negative must be refused by the KMS, and the production gate must
 refuse every quote. If any check fails, nothing is written.
 `check_fixture_set` repeats the keeper-side checks on a set read back from
 disk, including that each named release is the app, nonce, and issuing
-domain its name says. With `EGGOMI_KMS_FIXTURES_BIN` (a prebuilt binary),
+domain its name says, and that each release's evidence is a quote under
+`ark_pem` for that release's `report_data` and measurement. With `EGGOMI_KMS_FIXTURES_BIN` (a prebuilt binary),
 the script records the binary's path as `prebuilt_binary` and leaves
 `source_sha` null, since it cannot know that binary's commit.
 
