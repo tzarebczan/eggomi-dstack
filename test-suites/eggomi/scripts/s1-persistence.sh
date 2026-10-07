@@ -107,11 +107,16 @@ main() {
   [[ -n "$instance_before" && "$instance_before" != null ]] \
     || die "S0 VM has no instance id"
 
-  "$SUITE_DIR/scripts/mock-collateral.sh" serve >"$WORK_DIR/mock-collateral-s1.log" 2>&1 &
-  COLLATERAL_PID=$!
-  sleep 1
-  kill -0 "$COLLATERAL_PID" 2>/dev/null \
-    || die "mock collateral server exited; see $WORK_DIR/mock-collateral-s1.log"
+  if curl -fsS "http://127.0.0.1:${EGGOMI_COLLATERAL_PORT:-18088}/vcek/v1/Milan/cert_chain" \
+    >/dev/null 2>&1; then
+    log "reusing the mock collateral server on port ${EGGOMI_COLLATERAL_PORT:-18088}"
+  else
+    "$SUITE_DIR/scripts/mock-collateral.sh" serve >"$WORK_DIR/mock-collateral-s1.log" 2>&1 &
+    COLLATERAL_PID=$!
+    sleep 1
+    kill -0 "$COLLATERAL_PID" 2>/dev/null \
+      || die "mock collateral server exited; see $WORK_DIR/mock-collateral-s1.log"
+  fi
 
   restart_start=$SECONDS
   "${VMM_CLI[@]}" stop "$vm_id"

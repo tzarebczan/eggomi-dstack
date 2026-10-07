@@ -225,9 +225,14 @@ main() {
     return
   fi
 
-  "$SUITE_DIR/scripts/mock-collateral.sh" serve >"$WORK_DIR/mock-collateral.log" 2>&1 &
-  COLLATERAL_PID=$!
-  wait_for_collateral
+  if curl -fsS "http://127.0.0.1:${EGGOMI_COLLATERAL_PORT:-18088}/vcek/v1/Milan/cert_chain" \
+    >/dev/null 2>&1; then
+    log "reusing the mock collateral server on port ${EGGOMI_COLLATERAL_PORT:-18088}"
+  else
+    "$SUITE_DIR/scripts/mock-collateral.sh" serve >"$WORK_DIR/mock-collateral.log" 2>&1 &
+    COLLATERAL_PID=$!
+    wait_for_collateral
+  fi
   run_prod_root_e2e
 
   "${VMM_CLI[@]}" compose \

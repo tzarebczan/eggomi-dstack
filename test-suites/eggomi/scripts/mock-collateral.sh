@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 STATE_DIR=${EGGOMI_STATE_DIR:-"$ROOT/test-suites/eggomi/.state"}
-MOCK_ATTESTATION_BIN=${MOCK_ATTESTATION_BIN:-"$ROOT/dstack/target/release/dstack-mock-attestation"}
+MOCK_ATTESTATION_BIN=${MOCK_ATTESTATION_BIN:-"${CARGO_TARGET_DIR:-$ROOT/dstack/target}/release/dstack-mock-attestation"}
 COLLATERAL_PORT=${EGGOMI_COLLATERAL_PORT:-18088}
 COLLATERAL_URL=${EGGOMI_COLLATERAL_URL:-"http://10.0.2.2:${COLLATERAL_PORT}"}
 CONFIG="$STATE_DIR/mock-roots/tee-simulator.json"

@@ -10,6 +10,10 @@ edition.workspace = true
 license.workspace = true
 description = "Lab-only simulated SEV-SNP KMS. Outputs never pass a production gate."
 
+[[bin]]
+name = "snp-sim-kms"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 hkdf.workspace = true
@@ -19,8 +23,17 @@ rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sev-snp-qvl.workspace = true
 sha2.workspace = true
+# The lab server binary (src/main.rs).
+axum = "0.8"
+clap.workspace = true
+dstack-attest.workspace = true
+dstack-mr.workspace = true
+hex = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 mock-attestation = { path = "../mock-attestation" }
 serde_json.workspace = true
 sev-snp-qvl.workspace = true
+tokio = { workspace = true, features = ["full"] }

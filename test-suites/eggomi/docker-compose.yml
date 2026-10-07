@@ -3,7 +3,9 @@
 
 services:
   persistence-probe:
-    image: alpine:3.20
+    # The official busybox image ships the httpd applet. Alpine's busybox does
+    # not (it moved to busybox-extras), so `busybox httpd` exits with 127 there.
+    image: busybox:1.37
     command:
       - sh
       - -euc

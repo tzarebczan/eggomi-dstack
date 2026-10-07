@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: © 2026 Phala Network <dstack@phala.network>
+# SPDX-License-Identifier: Apache-2.0
+
+# S2 guest client. It runs inside the simulated-SNP CVM, asks the guest agent
+# for SNP evidence over a caller-chosen report_data, and posts that evidence
+# to the lab snp-sim-kms on the host (10.0.2.2 under QEMU user networking).
+# The host drives it through the published port:
+#   GET /release?app_id=HEX&nonce=HEX[&quote_nonce=HEX]
+# quote_nonce, when set, is quoted instead of nonce, to show a refused
+# report_data mismatch. Lab only: the reply includes the released key.
+services:
+  kms-client:
+    image: python:3.12-alpine
+    environment:
+      KMS_URL: http://10.0.2.2:18101
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import hashlib, http.client, http.server, json, os, socket, struct
+        import urllib.error, urllib.parse, urllib.request
+
+        KMS_URL = os.environ["KMS_URL"]
+
+        class AgentConnection(http.client.HTTPConnection):
+            def __init__(self):
+                super().__init__("localhost", timeout=60)
+
+            def connect(self):
+                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.sock.connect("/var/run/dstack.sock")
+
+        def release_report_data(app_id, nonce):
+            # snp-sim-kms app_release_report_data: SHA-256 over the tag, then
+            # each part as a u32 big-endian length and its bytes, zero padded.
+            digest = hashlib.sha256(b"lab-snp-kms-app/v2")
+            for part in (app_id, nonce):
+                digest.update(struct.pack(">I", len(part)))
+                digest.update(part)
+            return digest.digest() + bytes(32)
+
+        def attest(report_data):
+            conn = AgentConnection()
+            conn.request("POST", "/Attest", json.dumps({"report_data": report_data.hex()}),
+                         {"Content-Type": "application/json"})
+            reply = conn.getresponse()
+            body = reply.read()
+            if reply.status != 200:
+                raise RuntimeError("guest agent /Attest returned %d: %s" % (reply.status, body[:200]))
+            return json.loads(body)["attestation"]
+
+        def post_release(app_id, nonce, attestation):
+            request = urllib.request.Request(
+                KMS_URL + "/v1/release",
+                data=json.dumps({"app_id": app_id.hex(), "nonce": nonce.hex(),
+                                 "attestation": attestation}).encode(),
+                headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request, timeout=60) as reply:
+                    return reply.status, json.loads(reply.read())
+            except urllib.error.HTTPError as err:
+                return err.code, json.loads(err.read() or b"null")
+            except OSError as err:
+                return 0, {"error": "kms unreachable: %s" % err}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def reply(self, status, value):
+                body = json.dumps(value).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                url = urllib.parse.urlparse(self.path)
+                query = dict(urllib.parse.parse_qsl(url.query))
+                if url.path == "/health":
+                    return self.reply(200, {"ok": True, "kms_url": KMS_URL})
+                if url.path != "/release":
+                    return self.reply(404, {"error": "not found"})
+                try:
+                    app_id = bytes.fromhex(query["app_id"])
+                    nonce = bytes.fromhex(query["nonce"])
+                    quote_nonce = bytes.fromhex(query.get("quote_nonce", query["nonce"]))
+                    report_data = release_report_data(app_id, quote_nonce)
+                    attestation = attest(report_data)
+                except Exception as err:
+                    return self.reply(500, {"error": str(err)})
+                status, kms = post_release(app_id, nonce, attestation)
+                self.reply(200, {"kms_status": status, "kms": kms,
+                                 "report_data": report_data.hex(), "attestation": attestation})
+
+        http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()

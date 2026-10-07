@@ -7,6 +7,13 @@ It follows the dstack KMS onboarding shape:
 1. `bootstrap` mints a root and a simulated VCEK quote over that public key.
 2. `onboard_from` copies the root only after the source quote verifies.
 3. `release_app_key` returns one app key when `MEASUREMENT` and `report_data` match.
+4. `release_signed` (v2) binds a caller nonce and signs the record with the
+   attested root key. `onboard_from_attested` adds the target's own quote, and
+   `bootstrap_attestation` exposes the bootstrap evidence.
+
+The `snp-sim-kms` binary serves these over HTTP for the S2 harness. See
+[docs/eggomi/simulated-snp-kms.md](../../../docs/eggomi/simulated-snp-kms.md)
+for the wire formats.
 
 The quote chain comes from `mock-attestation`. The lab verifier uses that
 throwaway ARK. `LabSnpKms::production_gate` calls `QuoteVerifier::new_prod`

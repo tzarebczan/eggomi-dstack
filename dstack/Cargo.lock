@@ -7409,6 +7409,11 @@ name = "snp-sim-kms"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "clap",
+ "dstack-attest",
+ "dstack-mr",
+ "hex",
  "hkdf",
  "k256",
  "mock-attestation",
@@ -7417,6 +7422,7 @@ dependencies = [
  "serde_json",
  "sev-snp-qvl",
  "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]

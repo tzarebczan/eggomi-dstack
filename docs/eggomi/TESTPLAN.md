@@ -7,14 +7,23 @@ working-mirror tests; it does not authorize upstream issues or pull requests.
 
 | ID | Hardware | Outer TEE | Inner subVM | Secrets |
 | --- | --- | --- | --- | --- |
-| L1 | Local KVM | `--simulated-tee dstack-amd-sev-snp` | smolvm when nested | throwaway seed |
+| L1 | Local KVM | `--simulated-tee dstack-amd-sev-snp` | not smolvm (not viable on real SNP); pending decision | throwaway seed |
 | L2 | Local or CI | none | host-native smolvm | none |
 | L3 | Cloud VM, nested KVM off | simulated SNP | container fallback | throwaway seed |
-| P1 | AMD SNP bare metal | real SNP | smolvm | production KMS policy |
+| P1 | AMD SNP bare metal | real SNP | not smolvm (not viable today); pending decision | production KMS policy |
 
 CI uses L1 when KVM is available. Without KVM it must report S0 as skipped,
 run the unit-level S6 hooks, and use L2 for later smolvm coverage. A skip is
 not equivalent to an L1 pass.
+
+smolvm subVMs inside an SNP CVM are not possible on real hardware today.
+Linux refuses `kvm_amd` inside an SEV guest ("SVM: KVM is unsupported when
+running as an SEV guest"), and AMD lists nested virtualization in SEV guests
+as a future feature (AMDESE/AMDSEV issue #63). L1 therefore never enables
+nested KVM in the guest: a lab that did would pass where P1 fails.
+`test-suites/eggomi/nested-kvm-probe.yml` records what the L1 guest sees.
+L2's host-native smolvm stays valid only for the non-confidential local or
+desktop computer.
 
 ## Suites
 
@@ -62,19 +71,46 @@ chain, refuses release while the gate is off, releases one key only when
 `MEASUREMENT` and `report_data` match, and refuses that output at
 `QuoteVerifier::new_prod`. See
 [simulated-snp-kms.md](simulated-snp-kms.md). The production `dstack-kms`
-binary, its key derivation, and Phala TDX are unchanged. Wiring this policy
-into a long-running KMS process with mock collateral endpoints is still
-deferred.
+binary, its key derivation, and Phala TDX are unchanged.
+
+`test-suites/eggomi/scripts/s2-kms.sh` runs the same policy as a long-running
+`snp-sim-kms serve` process that a simulated-SNP CVM calls. The guest quotes
+`app_release_report_data(app_id, nonce)` through the guest agent and posts the
+evidence to the KMS. The KMS fetches the VCEK chain from the mock AMD-KDS
+endpoint and enrolls the MEASUREMENT recomputed from the VM's `vm_config`. S2
+requires these outcomes:
+
+- release is refused while the gate is off;
+- a matching release succeeds, and its signature verifies under the KMS root
+  key attested by the bootstrap quote;
+- a replayed quote under a new nonce, a report_data mismatch, and a
+  MEASUREMENT mismatch are each refused;
+- production AMD roots refuse the evidence the release was decided on.
+
+The [L1 runbook](l1-lab-runbook.md) records the first run.
 
 ### S3: browser and keeper lifecycle
 
-1. Create keeper and browser smolvms inside the guest, or host-native in L2.
+S3's inside-the-CVM form is blocked. smolvm subVMs inside an SNP CVM are not
+possible on real hardware today, so "smolvm when nested" on L1 and smolvm on
+P1 are not viable. The inner-isolation mechanism is pending a founder
+decision. The options:
+
+1. one CVM per role (browser, keeper, and later omi each in its own SNP CVM);
+2. gVisor or Landlock sandboxes for each role inside one CVM, as in the CC1 lab;
+3. VMPL/SVSM partitions inside one CVM, later, once the stack supports them;
+4. smolvm only on the non-confidential local or desktop computer, where no
+   SNP boundary is claimed.
+
+Once a mechanism is chosen, S3 measures its lifecycle: create, start, exec,
+stop, and restore; memory reclamation when the browser idles; and browser
+restart while keeper RPC stays available. The host-native L2 form below
+remains valid for option 4.
+
+1. Create keeper and browser smolvms host-native in L2.
 2. Measure create, start, exec, stop, checkpoint, and restore.
 3. Stop idle browser and measure memory reclamation.
 4. Restore or branch browser while keeper RPC remains available.
-
-This suite requires the later smolvm integration and nested KVM for the full
-L1 form.
 
 ### S4: secret capability RPC
 
@@ -142,5 +178,10 @@ release a key.
 - [x] S1 checks outer encrypted-disk/application-volume and swtpm persistence.
 - [x] S6 exposes measurement-mismatch and production-root rejection hooks.
 - [x] CAH host-native `fill-v1` exercises keeper, broker, and browser-guard stubs (E1).
-- [ ] Run S0/S1 on an L1 host with `/dev/kvm`, swtpm, and a development image.
-- [ ] Implement smolvm S3/S4 and activity S5 in the later milestone.
+- [x] Run S0/S1 on an L1 host with `/dev/kvm`, swtpm, and a development image
+  (2026-10-06; see the [L1 runbook](l1-lab-runbook.md)).
+- [x] S2 against a long-running lab KMS with mock collateral endpoints.
+- [x] Check smolvm inside the CVM: not viable on real SNP; the L1 probe shows
+  `svm` but no guest KVM. Guest KVM stays off by design.
+- [ ] Founder decision on inner isolation inside one SNP CVM.
+- [ ] Implement S3/S4 for the chosen mechanism, and activity S5.
