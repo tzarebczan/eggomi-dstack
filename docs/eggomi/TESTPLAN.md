@@ -112,6 +112,11 @@ remains valid for option 4.
 3. Stop idle browser and measure memory reclamation.
 4. Restore or branch browser while keeper RPC remains available.
 
+The L2 form is `test-suites/eggomi/scripts/s3-smolvm.sh`. It writes
+`s3-metrics.prom` and exits 77 when the host cannot run smolvm. Results,
+smolvm gaps, and how the suite maps onto options 1-3 are in
+[subvm-l2-results.md](subvm-l2-results.md).
+
 ### S4: secret capability RPC
 
 1. Store a test secret in keeper.
@@ -126,8 +131,14 @@ grant is checked, and that grant stays issued. A second admitted
 `browser-guard` that presents the copied grant reference is refused at
 resolve (`denied_recipient`); that is a separate check, and the grant stays
 issued until the bound recipient fills. A changed boot id is refused.
-Evidence is E1. The disk and checkpoint search above stays open. See
-[docs/cah](../cah/README.md).
+Evidence is E1. See [docs/cah](../cah/README.md).
+
+Between smolvm subVMs (L2), `test-suites/eggomi/scripts/s4-secret-rpc.sh`
+runs steps 1-4 over the CAH Noise KK channel. The browser receives only a
+token derived from the secret, sealed in the CAH answer format. The suite
+searches the browser's disks and a checkpoint taken while the session was
+live, with positive controls on both searches. See
+[subvm-l2-results.md](subvm-l2-results.md).
 
 ### S5: activity and metrics
 
@@ -185,3 +196,4 @@ release a key.
   `svm` but no guest KVM. Guest KVM stays off by design.
 - [ ] Founder decision on inner isolation inside one SNP CVM.
 - [ ] Implement S3/S4 for the chosen mechanism, and activity S5.
+- [x] S3/S4 host-native (L2) with smolvm subVMs, for option 4.
