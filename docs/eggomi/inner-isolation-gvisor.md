@@ -28,7 +28,10 @@ Summary:
 - S4' passes. All 14 cases pass, all 9 boundary checks pass, and no search
   finds the secret: three browser checkpoint images, the browser's, guard's,
   and restored browser's storage, and containerd's leftover restore copy.
-  Every search has a positive control that hits.
+  Each memory-image search has a positive control that must hit (a canary
+  page, the filled token), and so does the keeper volume (the secret). Each
+  storage search must have read the target's files, and a failed search
+  fails the suite.
 - Four findings need design attention. Each is described below.
   1. A sandbox can reach the CVM's own services through its bridge gateway,
      dstack-guest-agent on `:8090` among them. A CVM input floor is needed.
@@ -110,12 +113,15 @@ A production image needs these things:
 
 [`s3-gvisor.sh`](../../test-suites/eggomi/scripts/s3-gvisor.sh) runs
 [`incvm-s3.sh`](../../test-suites/eggomi/gvisor/incvm-s3.sh) as root in the
-CVM. Metric names follow `s3-smolvm.sh`. There are three runs on 2026-10-07:
-run 1 on a freshly booted CVM, then runs 2 and 3 on that same CVM. The
-figures below are from run 3. Across the runs, lifecycle times stayed
-within 10 % and probe results within 6 %, with two single-sample
-exceptions: browser exec p50 was 0.047 s in run 1, and guard stop was 1.08 s
-in run 3. Restore to ready took 2.33, 2.41, and 2.18 s.
+CVM. Metric names follow `s3-smolvm.sh`. There are four runs on 2026-10-07:
+run 1 on a freshly booted CVM, then runs 2 to 4 on that same CVM. Run 4
+followed the review fixes, which added checks but changed no measurement.
+The figures below are from run 3. Across the runs, most lifecycle times
+stayed within 10 % and probe results within 10 %. The exceptions: browser
+exec p50 was 0.047 s in run 1, guard stop ranged from 0.31 to 1.08 s, and
+browser stop from 0.29 to 0.41 s. Restore to ready took 2.33, 2.41, 2.18,
+and 2.43 s, and memory figures agreed within 3 % (run 1 aside, as noted
+below).
 
 Memory is reported three ways, because no single gVisor figure corresponds
 to smolvm's VMM RSS:
@@ -136,7 +142,7 @@ to smolvm's VMM RSS:
 | exec, p50 of 9 (keeper / browser) | 0.016 / 0.027 s | 0.028 / 0.029 s |
 | browser checkpoint | 1.23 s (source paused 0.51 s) | 2.22 s, `--leave-running` (no pause figure) |
 | checkpoint size | 166 MB (zstd) | 176 MB (uncompressed: runsc's default) |
-| browser stop | 0.16 s | 0.30 s |
+| browser stop | 0.16 s | 0.30 s (0.29-0.41 s across runs) |
 | restore to ready | 2.82 s | 2.18 s (`docker start --checkpoint` 1.75 s) |
 | branch a restored browser | 0.49 s | not available: Docker restores into the same container |
 | keeper idle | 132 MB host RSS, 58 MB guest | 33 MB cgroup, 42 MB PSS, 28 MB sandbox |
@@ -149,7 +155,7 @@ to smolvm's VMM RSS:
 | checkpoint raises the source by | +163 MB host RSS (G4) | +49 MB cgroup (page cache of the image) |
 | browser stop returns | 567 MB host RSS | 293 MB cgroup; CVM used -192 MB, shmem -174 MB |
 | restored browser idle | 141 MB host RSS (lazy) | 256 MB cgroup |
-| keeper probe during stop/restore | 48 attempts, 0 failures, max gap 0.16 s, p50 31 ms | 111 attempts, 0 failures, max gap 0.146 s, p50 3.2 ms |
+| keeper probe during stop/restore | 48 attempts, 0 failures, max gap 0.16 s, p50 31 ms | 111 attempts, 0 failures, max gap 0.146 s, p50 3.2 ms (all runs: 0 failures) |
 | restore leftovers | G6: 450-650 MB on disk under `vms/_shared` | 176 MB per restore in the CVM's `/tmp` (RAM). The suite measures and removes it |
 | per-role limits | VM size (vCPU, MiB) | cgroup v2 `memory.max` and `cpu.max`, checked per run |
 
@@ -200,7 +206,7 @@ What the numbers say:
 
 [`s4-gvisor.sh`](../../test-suites/eggomi/scripts/s4-gvisor.sh) runs
 [`incvm-s4.sh`](../../test-suites/eggomi/gvisor/incvm-s4.sh). It passed on
-every run, including run 3.
+all four runs. Hit counts below are the range across runs 3 and 4.
 
 ### The 14 cases
 
@@ -221,7 +227,7 @@ the restored browser's carried session is read back from that page.
 | purpose outside the allowlist / 60 s TTL | `denied_purpose` / `denied_ttl` |
 | live session (20 s TTL), filled into a login page | `filled`, fill `ok` |
 | restored browser: keeper RPC from the guard, and DevTools | `ok`, `ok` |
-| restored browser: redeem the session read from its page after the TTL | `expired` |
+| restored browser: its page still holds the original grant and token, and redeeming them after the TTL | `expired` (grant and token match) |
 
 ### Leak search
 
@@ -233,10 +239,10 @@ over 32 MB.
 
 | Target | Secret hits | Positive control |
 | --- | --- | --- |
-| browser checkpoint, pristine (before any fill) | 0 | a canary page opened before it: 128 hits |
-| browser checkpoint right after the fill | 0 | the filled token: 7 hits |
-| browser checkpoint after the filled tab was closed | 0 | (observation) the token: 3 hits |
-| containerd's leftover restore copy (`/tmp/ctrd-checkpoint*`) | 0 | the filled token: 7 hits |
+| browser checkpoint, pristine (before any fill) | 0 | a canary page opened before it: 128-138 hits |
+| browser checkpoint right after the fill | 0 | the filled token: 6-7 hits |
+| browser checkpoint after the filled tab was closed | 0 | (observation) the token: 2-3 hits |
+| containerd's leftover restore copy (`/tmp/ctrd-checkpoint*`) | 0 | the filled token: 6-7 hits |
 | browser storage: writable layer (including gVisor's `root:self` file store) and container directory | 0 | |
 | guard storage | 0 | |
 | restored browser storage | 0 | |
@@ -299,7 +305,7 @@ not a connect.
 4. **`memory.reclaim` does not reclaim gVisor memory without swap.** See
    S3'.
 5. **A filled session outlives its tab.** After the tab that held the fill
-   was closed, the next checkpoint still held the token (3 hits). See the
+   was closed, the next checkpoint still held the token (2 to 3 hits). See the
    pristine-checkpoint rule.
 
 ## Overhead
@@ -353,9 +359,9 @@ shows the following:
 
 - **Before any fill**, a checkpoint holds no session material. The canary
   page shows that the search sees the page content.
-- **Right after a fill**, the checkpoint holds the filled token (7 hits).
-  So does containerd's leftover restore copy.
-- **After the filled tab is closed**, the token is still there (3 hits).
+- **Right after a fill**, the checkpoint holds the filled token (6 to 7
+  hits). So does containerd's leftover restore copy.
+- **After the filled tab is closed**, the token is still there (2 to 3 hits).
   Closing a tab frees the page but does not scrub it.
 - A restored browser carries the token, and the token is bounded only by its
   TTL. Redeeming it after the TTL gives `expired`.
@@ -384,7 +390,7 @@ a pristine checkpoint. Closing tabs does not do it.
 | `test-suites/eggomi/gvisor/incvm-lib.sh`, `incvm-s3.sh`, `incvm-s4.sh` | the suites, run as root in the CVM |
 | `test-suites/eggomi/gvisor/gv_guard.py`, `cdp.py` | the guard in its own sandbox, and the DevTools client and relay |
 | `test-suites/eggomi/gvisor/boundary_probe.py`, `gvctl.py` | in-sandbox probe; CVM-side cgroup, PSS, reclaim, and Sentry views |
-| `test-suites/eggomi/subvm/*.py` | from PR #10, unchanged: keeper, guard, KK RPC, session material, scanner |
+| `test-suites/eggomi/subvm/*.py` | from PR #10 (on `next`), reused unchanged: keeper, guard, KK RPC, session material, scanner |
 
 Outputs: `$EGGOMI_STATE_DIR/work/s3-gvisor-metrics.prom`,
 `s3-gvisor-report.json`, `s4-gvisor-metrics.prom`, and `s4-gvisor-report.json`.

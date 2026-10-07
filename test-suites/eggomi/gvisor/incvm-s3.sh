@@ -91,17 +91,33 @@ chromium_sandboxed() {
     and .chromium.browser_uid == ["10001"]' "$RUN_DIR/chromium-sandbox.json" >/dev/null
 }
 
+# Sessions flow while the active sample is taken: each outcome is recorded,
+# and the suite requires successes and no failures.
 session_burst() {
-  local until=$1
+  local until=$1 out
   while (($(date +%s) < until)); do
-    guard_ctl "{\"cmd\":\"session\",\"purpose\":\"$PURPOSE\",\"ttl_ms\":5000}" >/dev/null || true
+    out=$(guard_ctl "{\"cmd\":\"session\",\"purpose\":\"$PURPOSE\",\"ttl_ms\":5000}" 2>&1) \
+      || out='{"error":"ctl_failed"}'
+    printf '%s\n' "$out" >>"$RUN_DIR/burst.jsonl"
   done
+}
+
+burst_ok() {
+  local good bad
+  good=$(jq -s '[.[] | select(.mint == "ok" and .accept == "filled" and .redeem == "ok")] | length' \
+    "$RUN_DIR/burst.jsonl")
+  bad=$(jq -s '[.[] | select((.mint == "ok" and .accept == "filled" and .redeem == "ok") | not)] | length' \
+    "$RUN_DIR/burst.jsonl")
+  metric 'active_sessions_total' "$good"
+  metric 'active_session_failures_total' "$bad"
+  ((good >= 3 && bad == 0))
 }
 
 main() {
   incvm_gate
   begin_run
   : >"$PROM"
+  : >"$RUN_DIR/burst.jsonl"
   trap cleanup EXIT
   setup_lab
   floor_on
@@ -155,10 +171,13 @@ main() {
   active=$(roles_sample active)
   cvm_sample active >/dev/null
   wait "$burst_pid" || true
+  check sessions_flowed_while_active burst_ok
   metric 'tab_growth_bytes{machine="browser"}' "$((active - idle))"
 
   # tab closed, then memory.reclaim ------------------------------------------
-  guard_ctl "{\"cmd\":\"close\",\"target\":\"$target\"}" >/dev/null
+  local closed_reply
+  closed_reply=$(guard_ctl "{\"cmd\":\"close\",\"target\":\"$target\"}")
+  [[ "$(jq -r '.code' <<<"$closed_reply")" == ok ]] || die "the heavy tab did not close: $closed_reply"
   sleep "$SETTLE"
   closed=$(mem_sample browser "$B" after_settle)
   cvm_sample after_settle >/dev/null
@@ -195,13 +214,14 @@ main() {
   metric 'checkpoint_rss_growth_bytes{machine="browser"}' "$((checkpointed - reclaimed))"
   check browser_alive_after_checkpoint guard_ok '{"cmd":"browser"}'
 
-  local before_stop cvm_before cvm_after
+  local before_stop cvm_before cvm_after browser_cg
+  browser_cg="/sys/fs/cgroup/system.slice/docker-$(cid "$B").scope"
   before_stop=$(mem_sample browser "$B" before_stop)
   cvm_before=$(cvm_sample before_stop)
   t=$(now); docker stop -t 10 "$B" >/dev/null; metric 'lifecycle_seconds{machine="browser",op="stop"}' "$(since "$t")"
   sleep 1
   cvm_after=$(cvm_sample after_browser_stop)
-  check browser_cgroup_released test "$(docker inspect -f '{{.State.Running}}' "$B")" = false
+  check browser_cgroup_released test ! -d "$browser_cg"
   metric 'reclaimed_bytes{machine="browser",via="stop"}' "$before_stop"
   metric 'cvm_returned_bytes{via="browser_stop"}' "$((cvm_before - cvm_after))"
 

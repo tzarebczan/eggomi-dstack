@@ -282,12 +282,14 @@ sentry_pid() {
 }
 
 # Search PATHS for the needle file's encodings (raw, UTF-16LE, hex) with the
-# L2 scanner. Prints the total hit count; the JSON goes to OUT_JSON.
+# L2 scanner. Prints the total hit count; the JSON goes to OUT_JSON. A failed
+# or empty search exits non-zero, so `x=$(scan_hits ...)` stops the suite
+# under errexit instead of reading as zero hits.
 scan_hits() {
   local needle=$1 out=$2
   shift 2
-  python3 "$PY/host_tools.py" scan "$needle" "$@" >"$out"
-  jq -r '.hits | add' "$out"
+  python3 "$PY/host_tools.py" scan "$needle" "$@" >"$out" || die "leak search failed: $*"
+  jq -er '.hits | add | numbers' "$out" || die "leak search wrote no hit count: $out"
 }
 
 # containerd stages a restore's checkpoint image in /tmp/ctrd-checkpoint*,

@@ -242,7 +242,8 @@ main() {
   t=$(now)
   docker checkpoint create --leave-running "$B" filled >/dev/null || die "filled checkpoint failed"
   ckpt_seconds=$(since "$t")
-  guard_ctl "{\"cmd\":\"close\",\"target\":\"$(jq -r '.target' <<<"$fill")\"}" >/dev/null
+  out=$(guard_ctl "{\"cmd\":\"close\",\"target\":\"$(jq -r '.target' <<<"$fill")\"}")
+  [[ "$(jq -r '.code' <<<"$out")" == ok ]] || die "the filled tab did not close: $out"
   sleep 2
   docker checkpoint create --leave-running "$B" closed >/dev/null || die "after-close checkpoint failed"
   docker stop -t 10 "$B" >/dev/null
@@ -279,10 +280,16 @@ main() {
   purge_restore_copies
   record restored_keeper_rpc '{"code":"ok","cdp":"ok"}' \
     "$(jq -cn --arg p "$rping" --arg c "$rcdp" '{code: $p, cdp: $c}')"
+  # The restored page must carry the original grant and token, so that the
+  # expiry below is about that session (the keeper checks expiry first).
+  local match
+  match=$(guard_ctl '{"cmd":"page_fill_matches"}')
   local wait_s
   wait_s=$(awk -v e="$expires_ms" -v n="$(date +%s%3N)" 'BEGIN { w = (e - n) / 1000 + 1; print (w > 0 ? w : 0) }')
   sleep "$wait_s"
-  record restored_session_expired '{"code":"expired"}' "$(guard_ctl '{"cmd":"redeem_from_page"}')"
+  record restored_session_expired '{"code":"expired","grant_match":true,"token_match":true}' \
+    "$(jq -c --argjson m "$match" '. + {grant_match: $m.grant_match, token_match: $m.token_match}' \
+      <<<"$(guard_ctl '{"cmd":"redeem_from_page"}')")"
   docker stop -t 10 "$B" >/dev/null
   local s_restored
   # shellcheck disable=SC2046
@@ -294,6 +301,12 @@ main() {
     ckpt_covered "$RUN_DIR/scan-secret-$name.json" "$(ckpt_dir "$name")" || coverage=false
   done
   jq -e '.files_scanned >= 1' "$RUN_DIR/scan-secret-keeper-volume.json" >/dev/null || coverage=false
+  # A container directory alone holds config.v2.json, hostconfig.json,
+  # hostname, hosts, and resolv.conf.
+  for name in browser-storage guard-storage restored-storage; do
+    jq -e '.files_scanned >= 5' "$RUN_DIR/scan-secret-$name.json" >/dev/null || coverage=false
+  done
+  jq -e '.files_scanned >= 3' "$RUN_DIR/scan-secret-restore-copy.json" >/dev/null || coverage=false
   [[ $coverage == true ]] || log "a leak search did not cover its target; see $RUN_DIR/scan-*.json"
   local ckpt_bytes
   ckpt_bytes=$(du -s -B1 --apparent-size "$(ckpt_dir filled)" | awk '{print $1}')

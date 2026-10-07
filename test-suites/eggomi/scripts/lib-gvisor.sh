@@ -130,6 +130,9 @@ run_incvm() {
   rm -f "$samples" "$stop"
   qemu_sampler "$LAB/vmm/vm/$vm_id/qemu.pid" "$samples" "$stop" &
   local sampler=$! rc=0
+  # shellcheck disable=SC2064 # expand now: these locals are gone at exit
+  trap "touch '$stop'; kill $sampler 2>/dev/null || true; rm -f '$stop'" EXIT
+  trap 'exit 130' INT TERM
   cvm "env EGGOMI_S3_SETTLE=${EGGOMI_S3_SETTLE:-30} EGGOMI_S3_TAB_MIB=${EGGOMI_S3_TAB_MIB:-256} \
     EGGOMI_KEEP=${EGGOMI_KEEP:-0} bash /run/eggomi-gv/code/sh/incvm-$SUITE_TAG.sh" || rc=$?
   touch "$stop"

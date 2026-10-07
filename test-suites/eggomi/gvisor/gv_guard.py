@@ -11,8 +11,10 @@ This module reuses ``guard_svc.Guard`` unchanged and adds control commands:
     browser            DevTools /json/version through the relay
     canary TEXT        open a page holding TEXT (a scan's positive control)
     tab MIB            open a page that holds MIB of JS memory
-    close TARGET       close a page
+    close TARGET       close a page; ok only once the target is gone
     fill               put the held session into a login page
+    page_fill_matches  whether a page's fill is the held grant and token
+                       (booleans only; nothing secret in the reply)
     redeem_from_page   read a filled session back from the browser, redeem it
 """
 
@@ -22,7 +24,9 @@ This module reuses ``guard_svc.Guard`` unchanged and adds control commands:
 
 from __future__ import annotations
 
+import hmac
 import json
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict
@@ -95,11 +99,19 @@ class GvGuard(guard_svc.Guard):
                     "text": text,
                 }
             if cmd == "close":
+                target = str(request["target"])
                 with self._cdp() as cdp:
-                    cdp.call("Target.closeTarget", {"targetId": str(request["target"])})
+                    cdp.call("Target.closeTarget", {"targetId": target})
+                    deadline = time.monotonic() + 10
+                    while any(p["targetId"] == target for p in cdp.pages()):
+                        if time.monotonic() > deadline:
+                            return {"code": "still_open"}
+                        time.sleep(0.1)
                 return {"code": "ok"}
             if cmd == "fill":
                 return self._fill()
+            if cmd == "page_fill_matches":
+                return self._page_fill_matches()
             if cmd == "redeem_from_page":
                 return self._redeem_from_page()
         except (OSError, ConnectionError, RuntimeError, KeyError, ValueError) as exc:
@@ -122,7 +134,8 @@ class GvGuard(guard_svc.Guard):
             )
         return {"code": "ok" if done else "fill_failed", "target": target}
 
-    def _redeem_from_page(self) -> Dict[str, Any]:
+    def _page_fill(self) -> Dict[str, Any] | None:
+        """Return the first page's ``window.__eggomiFill``, or ``None``."""
         with self._cdp() as cdp:
             for page in cdp.pages():
                 session = cdp.call(
@@ -134,10 +147,25 @@ class GvGuard(guard_svc.Guard):
                     "window.__eggomiFill ? JSON.stringify(window.__eggomiFill) : null",
                 )
                 if raw:
-                    fill = json.loads(raw)
-                    break
-            else:
-                return {"code": "nothing_filled"}
+                    return json.loads(raw)
+        return None
+
+    def _page_fill_matches(self) -> Dict[str, Any]:
+        with self._lock:
+            held = dict(self.held) if self.held else None
+        fill = self._page_fill()
+        if held is None or fill is None:
+            return {"code": "nothing_held" if held is None else "nothing_filled"}
+        return {
+            "code": "ok",
+            "grant_match": hmac.compare_digest(str(fill.get("g")), held["grant_ref"]),
+            "token_match": hmac.compare_digest(str(fill.get("t")), held["token"]),
+        }
+
+    def _redeem_from_page(self) -> Dict[str, Any]:
+        fill = self._page_fill()
+        if fill is None:
+            return {"code": "nothing_filled"}
         reply = self._call("Redeem", {"grant_ref": fill["g"], "token": fill["t"]})
         if "error" in reply:
             return {"code": reply["error"]["code"]}
