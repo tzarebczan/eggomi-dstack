@@ -147,11 +147,16 @@ def inspect(ctr: str) -> Dict[str, Any]:
     if proc.returncode != 0:
         raise Refused("no_such_container", container=ctr)
     info = json.loads(proc.stdout)[0]
+    policy = (info.get("HostConfig") or {}).get("RestartPolicy") or {}
+    restart = policy.get("Name") or "no"
+    if restart == "on-failure" and policy.get("MaximumRetryCount"):
+        restart = f"on-failure:{policy['MaximumRetryCount']}"
     return {
         "cid": info["Id"],
         "run": info["State"]["StartedAt"],
         "running": bool(info["State"]["Running"]),
         "created": parse_time(info["Created"]),
+        "restart": restart,
     }
 
 
@@ -335,12 +340,20 @@ def cmd_create(ctr: str, name: str, reuse: bool, leave_running: bool) -> Dict[st
     # The record, deadline included, is published before docker writes the
     # image: the lockless expiry pass (expire_on_disk) can then delete an
     # image whose deadline passes while docker is still writing it or hung.
-    state["checkpoints"][name] = {
+    record = {
         "kind": kind,
         "deadline_ms": deadline,
         "created_ms": now_ms(),
         "pending": True,
     }
+    # A checkpoint that stops the sandbox must not be undone by the restart
+    # policy: dockerd would start the container afresh at once (measured in
+    # the eggomi release's lab CVM), and the image could not be restored into
+    # it. The policy is set aside until the restore puts it back.
+    if not leave_running and info["restart"] != "no":
+        record["restart"] = info["restart"]
+        docker("update", "--restart=no", ctr)
+    state["checkpoints"][name] = record
     save(state)
     start = time.monotonic()
     proc = docker(*args, check=False)
@@ -348,6 +361,8 @@ def cmd_create(ctr: str, name: str, reuse: bool, leave_running: bool) -> Dict[st
         delete_checkpoint(ctr, info["cid"], name)
         del state["checkpoints"][name]
         save(state)
+        if "restart" in record:
+            docker("update", f"--restart={record['restart']}", ctr, check=False)
         raise RuntimeError(
             f"docker checkpoint create failed: {proc.stderr.strip()[:400]}"
         )
@@ -400,6 +415,8 @@ def cmd_restore(ctr: str, name: str) -> Dict[str, Any]:
         raise RuntimeError(
             f"docker start --checkpoint failed: {proc.stderr.strip()[:400]}"
         )
+    if record.get("restart"):
+        docker("update", f"--restart={record['restart']}", ctr, check=False)
     # The deadline may have passed while docker restored (the reaper's
     # lockless pass may already have deleted the image): enforce it on the
     # record here, so the reply says so whichever pass deleted it.

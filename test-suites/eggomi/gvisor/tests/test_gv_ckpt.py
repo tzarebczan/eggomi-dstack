@@ -430,6 +430,31 @@ class GvCkptTest(unittest.TestCase):
         self.assertEqual([r["name"] for r in out["reaped"]], ["half"])
         self.assertFalse(self.image("half").exists())
 
+    def test_a_stopping_checkpoint_sets_the_restart_policy_aside(self) -> None:
+        """Without it dockerd restarts the container at once; restore puts it back."""
+        db = json.loads(self.db.read_text())
+        db["containers"]["browser"]["restart"] = "unless-stopped"
+        self.db.write_text(json.dumps(db))
+        log = self.tmp / "docker.log"
+        os.environ["FAKE_DOCKER_LOG"] = str(log)
+        try:
+            self.run_cmd("arm", "browser")
+            rc, out = self.run_cmd("create", "--reuse", "browser", "pristine")
+            self.assertEqual((rc, out["kind"]), (0, "pristine"))
+            db = json.loads(self.db.read_text())
+            self.assertFalse(db["containers"]["browser"]["running"])
+            self.assertEqual(db["containers"]["browser"]["restart"], "no")
+            rc, out = self.run_cmd("restore", "browser", "pristine")
+            self.assertEqual(rc, 0, out)
+            db = json.loads(self.db.read_text())
+            self.assertEqual(db["containers"]["browser"]["restart"], "unless-stopped")
+            self.assertEqual(
+                log.read_text().split(),
+                ["update", "--restart=no", "update", "--restart=unless-stopped"],
+            )
+        finally:
+            del os.environ["FAKE_DOCKER_LOG"]
+
     def test_reap_deletes_every_image_left_over_from_before_a_reboot(self) -> None:
         """A cleared /run leaves images with no record; one pass deletes them."""
         self.run_cmd("arm", "browser")

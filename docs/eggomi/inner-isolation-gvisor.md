@@ -356,7 +356,14 @@ the deadlines every 0.2 s (state files only), so a deadline added meanwhile
 is not missed. A checkpoint or
 restore holds the policy lock for seconds, so each one reaps once more before
 it releases the lock: a deadline that passes meanwhile is enforced at once,
-on the step's own image too. A release's
+on the step's own image too. A checkpoint taken without
+`--leave-running` stops the sandbox, and dockerd's restart policy would start
+the container afresh at once (measured in the eggomi release's lab CVM), so
+`create` sets the policy to `no` first and `restore` puts it back. That is
+also the only way to checkpoint a browser whose profile is a volume: a
+restore needs every file the sandbox held open to be as it was, and a browser
+that goes on running or stops cleanly rewrites its profile (measured: "failed
+to walk Default/DIPS-wal"). A release's
 launcher calls `gv-ckpt` instead of `docker checkpoint` and `docker start
 --checkpoint`. A raw Docker checkpoint does not get past `restore`, which
 refuses images it did not record. The reaper deletes every checkpoint it has
