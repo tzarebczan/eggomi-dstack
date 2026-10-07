@@ -108,14 +108,14 @@ main() {
   create_keeper
   docker start "$K" >/dev/null
   install_keeper_state
-  wait_keeper || die "keeper did not answer on $KEEPER_ADDR"
+  wait_keeper 60 || die "keeper did not answer on $KEEPER_ADDR"
   create_guard
   docker start "$G" >/dev/null
   install_guard_state
-  wait_guard || die "guard did not reach the keeper"
+  wait_guard 60 || die "guard did not reach the keeper"
   create_browser
   docker start "$B" >/dev/null
-  wait_browser || die "the guard did not reach Chromium's DevTools"
+  wait_browser 90 || die "the guard did not reach Chromium's DevTools"
 
   # 1. Cases -----------------------------------------------------------------
   local P=$PURPOSE out
@@ -265,7 +265,7 @@ main() {
 
   # 4. Restore the filled checkpoint: the carried session is TTL-bound ------
   docker start --checkpoint filled "$B" >/dev/null || die "restore failed"
-  wait_browser || die "restored browser did not answer DevTools"
+  wait_browser 90 || die "restored browser did not answer DevTools"
   local rping rcdp
   rping=$(guard_ctl '{"cmd":"ping"}' | jq -r '.code')
   rcdp=$(guard_ctl '{"cmd":"browser"}' | jq -r '.code')
