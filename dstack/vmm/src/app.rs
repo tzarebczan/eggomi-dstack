@@ -59,6 +59,7 @@ mod image;
 mod mr_config;
 pub(crate) mod network;
 mod qemu;
+mod qmp;
 mod vm_info;
 mod workdir;
 
@@ -680,6 +681,61 @@ impl App {
         // is released by `reconcile_network_cleanup`, the next launch, or the
         // removal, whichever comes first.
         self.release_vm_interfaces(id).await;
+        Ok(())
+    }
+
+    /// Pauses a running VM in place (QMP `stop`): its vCPUs halt and its RAM
+    /// stays committed on this host. Needs `qmp_socket = true` at its launch.
+    /// A VM already paused is left as it is.
+    pub async fn pause_vm(&self, id: &str) -> Result<()> {
+        self.set_paused(id, true).await
+    }
+
+    /// Resumes a paused VM (QMP `cont`). A VM already running is left as it is.
+    pub async fn resume_vm(&self, id: &str) -> Result<()> {
+        self.set_paused(id, false).await
+    }
+
+    async fn set_paused(&self, id: &str, paused: bool) -> Result<()> {
+        use ra_rpc::ResultExt as _;
+        const LOCK_WAIT: Duration = Duration::from_secs(10);
+        self.refuse_if_removing(id)?;
+        // Not across a launch or a stop: they hold this lock while QEMU
+        // starts or exits. Bounded, so a caller that gave up knows its pause
+        // cannot land much later; a refusal (400): nothing was done.
+        let Ok(_launch) = tokio::time::timeout(LOCK_WAIT, self.launch_lock(id)).await else {
+            bail!("VM is starting or stopping, try again");
+        };
+        self.refuse_if_removing(id)?;
+        let running = self
+            .supervisor
+            .info(id)
+            .await?
+            .is_some_and(|info| info.state.status.is_running() && info.state.started);
+        if !running {
+            bail!("VM is not running");
+        }
+        let socket = self.work_dir(id)?.qmp_socket();
+        // Already so: "paused" exactly (not any state that is not running,
+        // such as a guest's own suspend), or running.
+        let done = |state: &qmp::RunState| {
+            if paused {
+                state.status == "paused"
+            } else {
+                state.running
+            }
+        };
+        if done(&qmp::query_status(&socket).await?) {
+            return Ok(());
+        }
+        // From here on the command may have acted: a failure is a 503, not
+        // the 400 that says nothing was done.
+        let command = if paused { "stop" } else { "cont" };
+        qmp::execute(&socket, command).await.with_code(503)?;
+        let state = qmp::query_status(&socket).await.with_code(503)?;
+        if !done(&state) {
+            ra_rpc::bail!(503, "QEMU reports {} after {command}", state.status);
+        }
         Ok(())
     }
 

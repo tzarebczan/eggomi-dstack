@@ -43,7 +43,7 @@ cid_start = 1000
 cid_pool_size = 1000
 max_allocable_vcpu = 20
 max_allocable_memory_in_mb = 100_000 # MB
-# Enable QMP socket
+# Enable QMP socket (PauseVm and ResumeVm need it at the VM's launch)
 qmp_socket = false
 # The user to run the VM as. If empty, the VM will be run as the current user.
 # Unique namespace when multiple dstack-vmm instances share one host. When
