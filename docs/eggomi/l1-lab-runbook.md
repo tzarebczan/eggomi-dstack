@@ -48,6 +48,59 @@ different `[host_api] port` values; dstack's default is 10000. The S2 compose
 file names the KMS at `10.0.2.2:18101`, and `s2-kms.sh` rewrites that port
 when `EGGOMI_KMS_PORT` differs.
 
+### passt networking (opt-in)
+
+`EGGOMI_LAB_NET=passt` at `init` writes a `[cvm.networking]` that runs each
+VM's NIC through passt instead of QEMU's user mode: rootless (a sidecar of the
+VM's launcher, over a socketpair), with the same view from the guest.
+
+It is not faster here. Measured on beast (2026-10-08, QEMU 10, a 4-vCPU
+guest of eggomi's VMM release fetching the 167 MB gVisor bundle from the
+host's loopback over HTTP): about 0.9 GB/s through passt and about 0.9 GB/s
+through user mode (0.71-0.96 GB/s over three runs each). The release's image
+pull, about 400 MB, took 14.1 s through passt and 14.8 s through user mode,
+within run-to-run noise: the guest's decompression and unpacking bound it,
+not the transport. So the lab stays on user mode; passt is here for a host
+that needs it, and as the base for a faster path (vhost-user) later. Its
+address comes from DHCP (`10.0.2.10/24`), `10.0.2.2` is the host's loopback
+(`map_host_loopback`, so the collateral, the KMS and every published port are
+where they were), its resolver is `10.0.2.3`, which passt forwards to the
+host's own (`dns_forward`, to `dns_host`, the host's first nameserver: passt's
+default skips a loopback stub such as systemd-resolved's), and the port map is published on the host's
+loopback (`--tcp-ports 127.0.0.1/<host>:<guest>`). passt must be on `PATH`
+or named by `EGGOMI_LAB_PASST`; no root is needed to install it:
+
+```bash
+# Arch's package, checked against the pacman keyring, unpacked as the user.
+f=passt-2026_07_28.f8df3f1-1-x86_64.pkg.tar.zst
+curl -fsSO "https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f" && curl -fsSO "https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f.sig"
+gpgv --keyring /etc/pacman.d/gnupg/pubring.gpg "$f.sig" "$f"
+mkdir -p ~/.local/bin && tar --zstd -xf "$f" -C /tmp usr/bin/passt usr/bin/passt.avx2 && install -m 0755 /tmp/usr/bin/passt* ~/.local/bin/
+```
+
+An existing lab switches by editing `vmm.toml` the same way and restarting
+the VMM:
+
+```toml
+[cvm]
+passt_path = "/home/tom/.local/bin/passt"
+
+[cvm.networking]
+mode = "passt"
+address = "10.0.2.10"
+netmask = "255.255.255.0"
+gateway = "10.0.2.2"
+map_host_loopback = "10.0.2.2"
+no_map_gw = false
+dns = ["10.0.2.3"]
+dns_forward = "10.0.2.3"
+dns_host = "127.0.0.53"
+ipv4_only = true
+```
+
+ A running VM keeps its NIC until it is stopped; a VM whose NIC follows
+the node's mode gets passt at its next start.
+
 ## Build
 
 Build only these crates into the lab's target directory. Run `df -h /`

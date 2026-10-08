@@ -535,6 +535,8 @@ impl VmConfig {
             ("--gateway", &networking.gateway),
             ("--map-host-loopback", &networking.map_host_loopback),
             ("--map-guest-addr", &networking.map_guest_addr),
+            ("--dns-forward", &networking.dns_forward),
+            ("--dns-host", &networking.dns_host),
         ] {
             if !value.is_empty() {
                 args.extend([flag.to_string(), value.clone()]);
@@ -1722,6 +1724,43 @@ mod tests {
         let args = sidecar.command.args.join(" ");
         assert!(args.contains("--tcp-ports 127.0.0.1/18080:8080"), "{args}");
         assert!(args.contains("--no-map-gw"), "{args}");
+        assert!(
+            !args.contains("--dns-forward") && !args.contains("--dns-host"),
+            "{args}"
+        );
+    }
+
+    #[test]
+    fn passt_sidecar_can_keep_user_modes_view_of_the_host_and_its_resolver() {
+        // user mode's guest sees the host at 10.0.2.2 (its loopback) and a
+        // resolver at 10.0.2.3; passt gives the same view with these four.
+        let (config, vm, mut prepared) = test_launch_fixture();
+        let mut passt = config.cvm.networking.clone();
+        passt.nic.mode = NetworkingMode::Passt;
+        passt.gateway = "10.0.2.2".into();
+        passt.map_host_loopback = "10.0.2.2".into();
+        passt.no_map_gw = false;
+        passt.dns = vec!["10.0.2.3".into()];
+        passt.dns_forward = "10.0.2.3".into();
+        passt.dns_host = "127.0.0.53".into();
+        prepared.networks = vec![passt.clone()];
+        let mut cfg = config.cvm.clone();
+        cfg.passt_path = "/usr/bin/passt".into();
+        let args = vm
+            .passt_sidecar(&cfg, &prepared, 0, &passt, 3)
+            .unwrap()
+            .command
+            .args;
+        for pair in [
+            ["--gateway", "10.0.2.2"],
+            ["--map-host-loopback", "10.0.2.2"],
+            ["--dns", "10.0.2.3"],
+            ["--dns-forward", "10.0.2.3"],
+            ["--dns-host", "127.0.0.53"],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+        }
+        assert!(!args.iter().any(|a| a == "--no-map-gw"), "{args:?}");
     }
 
     #[test]

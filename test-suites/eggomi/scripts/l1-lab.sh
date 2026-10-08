@@ -36,6 +36,34 @@ init() {
   local cid_start=${EGGOMI_LAB_CID_START:-2000}
   local host_api_port=${EGGOMI_LAB_HOST_API_PORT:-10100}
   local image=${EGGOMI_DEV_IMAGE:-dstack-dev-0.6.0}
+  local net=${EGGOMI_LAB_NET:-user} networking passt="" passt_line=""
+  case $net in
+    user) networking='mode = "user"' ;;
+    passt)
+      # Rootless, with the same view from the guest as user mode: its
+      # address from DHCP, the host's loopback at 10.0.2.2, a resolver at
+      # 10.0.2.3 answering with the host's own, and the port map published
+      # on the host's loopback (docs/eggomi/l1-lab-runbook.md).
+      passt=${EGGOMI_LAB_PASST:-$(command -v passt || true)}
+      [[ -x $passt ]] || die "EGGOMI_LAB_NET=passt: no passt (set EGGOMI_LAB_PASST or put it on PATH)"
+      passt_line="passt_path = \"$passt\""
+      # passt's own default skips a loopback stub (systemd-resolved's).
+      local dns_host
+      dns_host=$(awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf)
+      [[ $dns_host =~ ^[0-9.]+$ ]] || die "EGGOMI_LAB_NET=passt: no IPv4 nameserver in /etc/resolv.conf"
+      networking="mode = \"passt\"
+address = \"10.0.2.10\"
+netmask = \"255.255.255.0\"
+gateway = \"10.0.2.2\"
+map_host_loopback = \"10.0.2.2\"
+no_map_gw = false
+dns = [\"10.0.2.3\"]
+dns_forward = \"10.0.2.3\"
+dns_host = \"$dns_host\"
+ipv4_only = true"
+      ;;
+    *) die "EGGOMI_LAB_NET is user or passt" ;;
+  esac
   local target=${CARGO_TARGET_DIR:-"$LAB/target"}
   mkdir -p "$LAB/logs" "$LAB/image" "$LAB/state" "$VMM_DIR/run" "$VMM_DIR/vm"
   [[ ! -e "$LAB/env.sh" ]] || die "$LAB/env.sh exists; remove it to re-initialise"
@@ -84,9 +112,10 @@ cid_start = $cid_start
 cid_pool_size = 100
 max_allocable_vcpu = 8
 max_allocable_memory_in_mb = 16_384
+$passt_line
 
 [cvm.networking]
-mode = "user"
+$networking
 
 [cvm.port_mapping]
 enabled = true

@@ -203,6 +203,14 @@ dns = ["1.1.1.1", "1.0.0.1"]
 # These two need passt from August 2024 or later; no_map_gw also works before.
 map_host_loopback = ""
 map_guest_addr = ""
+# Queries the guest sends to dns_forward go to dns_host, the host's own
+# resolver (--dns-forward, --dns-host). passt's default dns_host skips a
+# loopback stub (systemd-resolved's 127.0.0.53), so name it on such a host.
+# With dns = [dns_forward], the guest keeps user mode's 10.0.2.3; with
+# gateway and map_host_loopback "10.0.2.2" (and no_map_gw false), its
+# 10.0.2.2 is the host's loopback, as in user mode.
+dns_forward = ""
+dns_host = ""
 no_map_gw = true
 ipv4_only = true
 
