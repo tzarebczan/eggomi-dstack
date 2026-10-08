@@ -1343,12 +1343,21 @@ pub async fn cmd_sys_setup(args: SetupArgs) -> Result<()> {
     result
 }
 
+/// `chronyc waitsync` for `secure_time`: how many times it checks, and how
+/// many seconds apart. Upstream checked every 5 s (30 tries), so a boot waited
+/// up to 5 s, often 10 s, after chrony had synced; checking every half second
+/// ends the wait within 0.5 s of the sync, for the same 150 s budget
+/// (eggomi#826, the snp-sim launch timings).
+const WAITSYNC_MAX_TRIES: u32 = 300;
+const WAITSYNC_INTERVAL_S: f64 = 0.5;
+
 async fn do_sys_setup(stage0: Stage0<'_>) -> Result<()> {
     verify_app_compose_policy(&stage0.shared).context("Failed to verify app-compose policy")?;
     if stage0.shared.app_compose.secure_time {
         info!("Waiting for the system time to be synchronized");
+        let (tries, interval) = (WAITSYNC_MAX_TRIES, WAITSYNC_INTERVAL_S);
         cmd! {
-            chronyc waitsync 30 0.1 0 5;
+            chronyc waitsync $tries 0.1 0 $interval;
         }
         .context("Failed to sync system time")?;
     } else {
@@ -4349,4 +4358,16 @@ Endpoint = [2001:db8::1]:51822
         );
         assert!(wireguard_endpoint_hosts("Endpoint = missing-port").is_err());
     }
+}
+
+#[test]
+fn test_waitsync_polls_every_half_second_for_the_same_budget() {
+    assert_eq!(WAITSYNC_INTERVAL_S, 0.5);
+    // The upstream budget: 30 tries, 5 s apart.
+    assert_eq!(
+        f64::from(WAITSYNC_MAX_TRIES) * WAITSYNC_INTERVAL_S,
+        30.0 * 5.0
+    );
+    // chronyc takes the interval as given: its Display is what the command line gets.
+    assert_eq!(WAITSYNC_INTERVAL_S.to_string(), "0.5");
 }
