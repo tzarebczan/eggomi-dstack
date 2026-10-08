@@ -104,6 +104,11 @@ mounted inside the privileged container, which never mounts anything on the
 host. Only the image directory was kept, without `disk.raw`. As with the first
 image, never replace the image in place: lab VMs reference it by name.
 
+The harness scripts deploy `EGGOMI_DEV_IMAGE`, which `init` writes into
+`env.sh` as `dstack-dev-0.6.0` and never overwrites afterwards. To run the
+suites on the new image, set `EGGOMI_DEV_IMAGE=dstack-dev-0.6.0-eggomi1` in
+`env.sh`, or export it after sourcing `env.sh`.
+
 ## Start
 
 ```bash
