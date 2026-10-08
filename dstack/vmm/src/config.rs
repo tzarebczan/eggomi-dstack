@@ -1022,8 +1022,14 @@ fn validate_networking(networking: &Networking) -> Result<()> {
                 "cvm.networking.macvtap_mode must be private, bridge, vepa, or passthru"
             );
         }
-        // User and passt modes have no identity fields of their own to check.
-        NetworkingMode::User | NetworkingMode::Passt => {}
+        // passt's --no-map-gw cancels --map-host-loopback without a word, and
+        // the guest then cannot reach the address it was told is the host.
+        NetworkingMode::Passt => anyhow::ensure!(
+            networking.map_host_loopback.trim().is_empty() || !networking.no_map_gw,
+            "cvm.networking.map_host_loopback needs no_map_gw = false: passt's --no-map-gw cancels it"
+        ),
+        // User mode has no identity fields of its own to check.
+        NetworkingMode::User => {}
     }
     Ok(())
 }
@@ -1175,6 +1181,18 @@ pub struct Networking {
     pub map_host_loopback: String,
     #[serde(default)]
     pub map_guest_addr: String,
+    /// The address the guest sends DNS queries to, which passt forwards to
+    /// `dns_host` (`--dns-forward`). Set it, and `dns` to the same address,
+    /// to keep user mode's view: a resolver at 10.0.2.3 that answers with
+    /// whatever the host resolves.
+    #[serde(default)]
+    pub dns_forward: String,
+    /// The host's resolver those queries go to (`--dns-host`). passt's own
+    /// default, the first nameserver of the host's /etc/resolv.conf, skips a
+    /// loopback stub such as systemd-resolved's 127.0.0.53 (measured: the
+    /// guest's queries went unanswered), so name it on such a host.
+    #[serde(default)]
+    pub dns_host: String,
     #[serde(default)]
     pub no_map_gw: bool,
     #[serde(default)]
@@ -1381,6 +1399,23 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passt_refuses_a_host_loopback_map_that_no_map_gw_would_cancel() {
+        let config: Config = Figment::from(load_config_figment(None)).extract().unwrap();
+        let mut net = config.cvm.networking.clone();
+        net.nic.mode = NetworkingMode::Passt;
+        net.map_host_loopback = "10.0.2.2".into();
+        net.no_map_gw = true;
+        let err = validate_networking(&net).unwrap_err().to_string();
+        assert!(err.contains("no_map_gw = false"), "{err}");
+        net.no_map_gw = false;
+        validate_networking(&net).unwrap();
+        // The compiled-in defaults (no map, no_map_gw) stay valid.
+        net.map_host_loopback = String::new();
+        net.no_map_gw = true;
+        validate_networking(&net).unwrap();
+    }
 
     /// The four names are spelled out three times -- serde, `FromStr` and
     /// `as_str` -- so a new variant that misses one of them fails here.
