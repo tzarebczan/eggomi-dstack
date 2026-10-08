@@ -73,6 +73,13 @@
       "usr/sbin/ip6tables",
       "usr/sbin/ebtables",
       "usr/sbin/nft"
+    ],
+    "eggomi-gvisor": [
+      "usr/lib/eggomi/gvisor/runsc",
+      "usr/lib/eggomi/gvisor/gvisor-bin/gvisor_sentry",
+      "usr/lib/eggomi/gvisor/gvisor-bin/runsc-fd-parking",
+      "usr/lib/eggomi/gvisor/gvisor-bin/gvisor-sentry-prewarmer",
+      "usr/lib/eggomi/gvisor/gvisor-bin/checkpointgofer"
     ]
   },
   "required_kernel_globs": {
