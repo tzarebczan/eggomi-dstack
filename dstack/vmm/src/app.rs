@@ -711,18 +711,23 @@ impl App {
             bail!("VM is not running");
         }
         let socket = self.work_dir(id)?.qmp_socket();
-        let state = qmp::query_status(&socket).await?;
-        if state.running != paused {
+        // Already so: "paused" exactly (not any state that is not running,
+        // such as a guest's own suspend), or running.
+        let done = |state: &qmp::RunState| {
+            if paused {
+                state.status == "paused"
+            } else {
+                state.running
+            }
+        };
+        if done(&qmp::query_status(&socket).await?) {
             return Ok(());
         }
-        qmp::execute(&socket, if paused { "stop" } else { "cont" }).await?;
+        let command = if paused { "stop" } else { "cont" };
+        qmp::execute(&socket, command).await?;
         let state = qmp::query_status(&socket).await?;
-        if state.running == paused {
-            bail!(
-                "QEMU reports {} after {}",
-                state.status,
-                if paused { "stop" } else { "cont" }
-            );
+        if !done(&state) {
+            bail!("QEMU reports {} after {command}", state.status);
         }
         Ok(())
     }
