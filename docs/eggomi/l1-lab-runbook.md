@@ -75,7 +75,7 @@ or named by `EGGOMI_LAB_PASST`; no root is needed to install it:
 f=passt-2026_07_28.f8df3f1-1-x86_64.pkg.tar.zst
 curl -fsSO "https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f" && curl -fsSO "https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f.sig"
 gpgv --keyring /etc/pacman.d/gnupg/pubring.gpg "$f.sig" "$f"
-tar --zstd -xf "$f" -C /tmp usr/bin/passt usr/bin/passt.avx2 && install -m 0755 /tmp/usr/bin/passt* ~/.local/bin/
+mkdir -p ~/.local/bin && tar --zstd -xf "$f" -C /tmp usr/bin/passt usr/bin/passt.avx2 && install -m 0755 /tmp/usr/bin/passt* ~/.local/bin/
 ```
 
 An existing lab switches by editing `vmm.toml` the same way and restarting

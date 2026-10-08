@@ -1024,8 +1024,9 @@ fn validate_networking(networking: &Networking) -> Result<()> {
         }
         // passt's --no-map-gw cancels --map-host-loopback without a word, and
         // the guest then cannot reach the address it was told is the host.
+        // ("none" is passt's own way to say no mapping, as no_map_gw is.)
         NetworkingMode::Passt => anyhow::ensure!(
-            networking.map_host_loopback.trim().is_empty() || !networking.no_map_gw,
+            matches!(networking.map_host_loopback.trim(), "" | "none") || !networking.no_map_gw,
             "cvm.networking.map_host_loopback needs no_map_gw = false: passt's --no-map-gw cancels it"
         ),
         // User mode has no identity fields of its own to check.
@@ -1411,9 +1412,12 @@ mod tests {
         assert!(err.contains("no_map_gw = false"), "{err}");
         net.no_map_gw = false;
         validate_networking(&net).unwrap();
-        // The compiled-in defaults (no map, no_map_gw) stay valid.
+        // The compiled-in defaults (no map, no_map_gw) stay valid, and so
+        // does passt's own "none" beside no_map_gw: both say no mapping.
         net.map_host_loopback = String::new();
         net.no_map_gw = true;
+        validate_networking(&net).unwrap();
+        net.map_host_loopback = "none".into();
         validate_networking(&net).unwrap();
     }
 
