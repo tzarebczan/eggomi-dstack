@@ -79,6 +79,31 @@ jq '{version, git_revision, is_dev}' "$EGGOMI_LAB_DIR/image/dstack-dev-0.6.0/met
 It must report `"is_dev": true` and include `measurement.snp.cbor`. On btrfs,
 `cp --reflink=always` makes a copy of an existing image directory for free.
 
+### `dstack-dev-0.6.0-eggomi1`
+
+The image above carries none of the fork's guest changes. A second image,
+`dstack-dev-0.6.0-eggomi1`, sits beside it, built from `0e37b0ae`
+(eggomi-dstack#17). It adds three changes:
+
+- the 0.5 s `chronyc waitsync` poll (#16);
+- LUKS2 formatted with `--pbkdf-force-iterations 1000`;
+- gVisor's `20260928.0` release at `/usr/lib/eggomi/gvisor`.
+
+Its os_image_hash (`digest.txt`) is
+`d1ac112605871755a8d20ba5371572619a1825d1101752ffb86cbbef5fbb5eff`. Its
+MEASUREMENT at 4 vCPUs is
+`3a9f30a7835d8bdc1d238eb1e772400803adadfecb78d0b1481d5af0a798434df6095651c33e4dae7966e43eb95d4769`
+(`snp-sim-kms measurement --vm-config`).
+
+A cold build of the dev flavor takes 26.5 minutes on the 32-thread lab host.
+Rebuilding `dstack-mkosi-build` and preparing the scratch filesystem add about
+6 more. The build tree does not fit beside a nearly full `/`. The
+`repro-build.sh` container was therefore run with its build directory and
+mkosi workspace on an ext4 loop file on another disk. The loop file was
+mounted inside the privileged container, which never mounts anything on the
+host. Only the image directory was kept, without `disk.raw`. As with the first
+image, never replace the image in place: lab VMs reference it by name.
+
 ## Start
 
 ```bash
