@@ -698,10 +698,14 @@ impl App {
 
     async fn set_paused(&self, id: &str, paused: bool) -> Result<()> {
         use ra_rpc::ResultExt as _;
+        const LOCK_WAIT: Duration = Duration::from_secs(10);
         self.refuse_if_removing(id)?;
         // Not across a launch or a stop: they hold this lock while QEMU
-        // starts or exits.
-        let _launch = self.launch_lock(id).await;
+        // starts or exits. Bounded, so a caller that gave up knows its pause
+        // cannot land much later; a refusal (400): nothing was done.
+        let Ok(_launch) = tokio::time::timeout(LOCK_WAIT, self.launch_lock(id)).await else {
+            bail!("VM is starting or stopping, try again");
+        };
         self.refuse_if_removing(id)?;
         let running = self
             .supervisor
