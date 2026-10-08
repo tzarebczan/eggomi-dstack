@@ -5,7 +5,7 @@ set -euo pipefail
 # run with no output at all, which says nothing about what regressed.
 trap 'echo "acceptance check failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 D=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-for component in dstack-rust image-tools container-stack sysbox nvattest kernel nvidia zfs ovmf; do
+for component in dstack-rust image-tools container-stack sysbox nvattest kernel nvidia zfs ovmf gvisor; do
   test -f "$D/components/$component/$component.sh"
   test -x "$D/components/$component/$component-build.sh"
 done
@@ -278,7 +278,7 @@ grep -q '^RUST_TOOLCHAIN_VERSION=1.92.0$' "$D/versions.env"
 # currently declares go 1.25.0); GOTOOLCHAIN=local turns a violation into a
 # build failure rather than a silent download.
 grep -q '^GO_TOOLCHAIN_VERSION=1.26.2$' "$D/versions.env"
-for component in dstack-rust image-tools container-stack sysbox nvattest kernel nvidia zfs ovmf; do
+for component in dstack-rust image-tools container-stack sysbox nvattest kernel nvidia zfs ovmf gvisor; do
   definition="$D/components/$component/$component.sh"
   grep -q "^COMPONENT_NAME=$component$" "$definition"
   grep -q '^component_cache_key()' "$definition"

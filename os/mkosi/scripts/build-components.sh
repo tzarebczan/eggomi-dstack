@@ -30,6 +30,7 @@ components=(
   nvidia
   zfs
   ovmf
+  gvisor
 )
 
 for component in "${components[@]}"; do component_run "$component"; done

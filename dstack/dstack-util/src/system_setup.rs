@@ -2810,24 +2810,9 @@ impl<'a> Stage0<'a> {
 
     fn luks_setup(&self, disk_crypt_key: &str, name: &str, discard: bool) -> Result<()> {
         let root_hd = &self.args.device;
-        let sector_offset = PAYLOAD_OFFSET / 512;
         info!("Formatting encrypted disk");
-        let sector_offset = sector_offset.to_string();
         let mut child = Command::new("cryptsetup")
-            .args([
-                "luksFormat",
-                "--type",
-                "luks2",
-                "--offset",
-                &sector_offset,
-                "--cipher",
-                "aes-xts-plain64",
-                "--pbkdf",
-                "pbkdf2",
-                "--label",
-                LUKS_INITIALIZING_LABEL,
-                "-d-",
-            ])
+            .args(luks_format_args())
             .arg(root_hd)
             .arg(name)
             .stdin(Stdio::piped())
@@ -3309,6 +3294,44 @@ const PAYLOAD_OFFSET: u64 = 16777216;
 /// carrying it was interrupted mid-initialization and holds no data.
 const LUKS_INITIALIZING_LABEL: &str = "dstack-initializing";
 
+/// PBKDF2 iterations for a newly formatted data disk's keyslot (and, since
+/// forcing skips cryptsetup's benchmark, its volume-key digest too).
+///
+/// The passphrase is the KMS-derived disk key, not something a person chose,
+/// so key stretching adds no brute-force margin; at cryptsetup's default
+/// iteration time it cost about 2 s per open plus a benchmark and 2 s more
+/// per format (eggomi#826, the snp-sim launch timings). 1000 is the smallest
+/// count cryptsetup accepts for PBKDF2. Disks formatted earlier keep the
+/// count in their header and open with it, since luksOpen reads the keyslot's
+/// own parameters; `validate_luks2_headers` checks the KDF and hash, never
+/// the count.
+const LUKS_PBKDF2_ITERATIONS: u32 = 1000;
+// cryptsetup's floor for PBKDF2; a lower count is refused at format time.
+const _: () = assert!(LUKS_PBKDF2_ITERATIONS >= 1000);
+
+/// The `cryptsetup` arguments that format the data disk, before the device
+/// and mapping name.
+fn luks_format_args() -> Vec<String> {
+    [
+        "luksFormat",
+        "--type",
+        "luks2",
+        "--offset",
+        &(PAYLOAD_OFFSET / 512).to_string(),
+        "--cipher",
+        "aes-xts-plain64",
+        "--pbkdf",
+        "pbkdf2",
+        "--pbkdf-force-iterations",
+        &LUKS_PBKDF2_ITERATIONS.to_string(),
+        "--label",
+        LUKS_INITIALIZING_LABEL,
+        "-d-",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
 /// Returns whether the primary header carries [`LUKS_INITIALIZING_LABEL`].
 fn validate_luks2_headers(mut reader: impl std::io::Read) -> Result<bool> {
     let initializing = validate_single_luks2_header(&mut reader, 0)?;
@@ -3594,6 +3617,144 @@ fn test_validate_luks2_header_rejects_keyslot_area_that_overflows() {
     assert!(
         error.to_string().contains("Invalid LUKS keyslot area"),
         "{error:#}"
+    );
+}
+
+#[test]
+fn test_luks_format_forces_minimal_pbkdf2_iterations() {
+    let args = luks_format_args();
+    let after = |flag: &str| {
+        let at = args.iter().position(|a| a == flag).expect(flag);
+        args[at + 1].as_str()
+    };
+    assert_eq!(after("--pbkdf"), "pbkdf2");
+    assert_eq!(after("--pbkdf-force-iterations"), "1000");
+    assert_eq!(after("--offset"), "32768");
+    assert_eq!(after("--label"), LUKS_INITIALIZING_LABEL);
+}
+
+/// What the data disk's open path does with a header, without root: copy the
+/// header out, validate it, then check the key against it
+/// (`--test-passphrase` instead of activating a mapping). Returns the
+/// iteration counts `luksDump` reports (keyslot, then digest).
+#[cfg(test)]
+fn luks_open_checks(device: &Path, key: &str, workdir: &Path) -> Vec<u64> {
+    let hdr = workdir.join("hdr");
+    let status = Command::new("cryptsetup")
+        .args(["luksHeaderBackup", "--header-backup-file"])
+        .arg(&hdr)
+        .arg(device)
+        .status()
+        .expect("cryptsetup luksHeaderBackup");
+    assert!(status.success());
+    let initializing = validate_luks2_headers(fs::File::open(&hdr).unwrap()).unwrap();
+    assert!(
+        initializing,
+        "a fresh format carries the initializing label"
+    );
+    let opens = |key: &str| {
+        let mut child = Command::new("cryptsetup")
+            .args(["open", "--test-passphrase", "--type", "luks2", "--header"])
+            .arg(&hdr)
+            .arg("-d-")
+            .arg(device)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("cryptsetup open");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(key.as_bytes())
+            .unwrap();
+        child.wait().unwrap().success()
+    };
+    assert!(opens(key));
+    assert!(!opens("not-the-disk-key"));
+    let dump = Command::new("cryptsetup")
+        .arg("luksDump")
+        .arg(device)
+        .output()
+        .expect("cryptsetup luksDump");
+    String::from_utf8(dump.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Iterations:"))
+        .map(|count| count.trim().parse().unwrap())
+        .collect()
+}
+
+/// Formats a file the way `luks_setup` formats the data disk, with extra
+/// arguments, and returns the keyslot and digest iteration counts after the
+/// open checks. None when the host has no cryptsetup.
+#[cfg(test)]
+fn luks_format_file(args: &[String], extra: &[&str]) -> Option<Vec<u64>> {
+    if Command::new("cryptsetup")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: no cryptsetup on this host");
+        return None;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let device = dir.path().join("disk.img");
+    let file = fs::File::create(&device).unwrap();
+    file.set_len(PAYLOAD_OFFSET * 2).unwrap();
+    drop(file);
+    let key = "d1sk-key-from-the-kms-0123456789abcdef0123456789abcdef";
+    // On a regular file cryptsetup picks the filesystem's 4096-byte sectors;
+    // the guest's virtio disk gets 512, which the header check requires.
+    let mut child = Command::new("cryptsetup")
+        .args(args)
+        .args(extra)
+        .args(["--sector-size", "512"])
+        .arg(&device)
+        .arg("dstack_data_disk")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("cryptsetup luksFormat");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(key.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "luksFormat failed");
+    Some(luks_open_checks(&device, key, dir.path()))
+}
+
+#[test]
+fn test_luks_format_with_forced_iterations_opens() {
+    let Some(iterations) = luks_format_file(&luks_format_args(), &[]) else {
+        return;
+    };
+    // Keyslot and digest both: forcing skips the benchmark that sizes either.
+    assert_eq!(iterations, [1000, 1000]);
+}
+
+/// A disk formatted before the change (the benchmarked count, here kept
+/// short with --iter-time) still validates and opens: nothing on the open
+/// path depends on the count.
+#[test]
+fn test_luks_disk_formatted_before_the_change_still_opens() {
+    let legacy: Vec<String> = {
+        let args = luks_format_args();
+        let at = args
+            .iter()
+            .position(|a| a == "--pbkdf-force-iterations")
+            .unwrap();
+        [&args[..at], &args[at + 2..]].concat()
+    };
+    let Some(iterations) = luks_format_file(&legacy, &["--iter-time", "50"]) else {
+        return;
+    };
+    assert_eq!(iterations.len(), 2);
+    assert!(
+        iterations[0] > u64::from(LUKS_PBKDF2_ITERATIONS),
+        "{iterations:?}"
     );
 }
 
