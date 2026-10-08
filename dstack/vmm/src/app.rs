@@ -697,6 +697,7 @@ impl App {
     }
 
     async fn set_paused(&self, id: &str, paused: bool) -> Result<()> {
+        use ra_rpc::ResultExt as _;
         self.refuse_if_removing(id)?;
         // Not across a launch or a stop: they hold this lock while QEMU
         // starts or exits.
@@ -723,11 +724,13 @@ impl App {
         if done(&qmp::query_status(&socket).await?) {
             return Ok(());
         }
+        // From here on the command may have acted: a failure is a 503, not
+        // the 400 that says nothing was done.
         let command = if paused { "stop" } else { "cont" };
-        qmp::execute(&socket, command).await?;
-        let state = qmp::query_status(&socket).await?;
+        qmp::execute(&socket, command).await.with_code(503)?;
+        let state = qmp::query_status(&socket).await.with_code(503)?;
         if !done(&state) {
-            bail!("QEMU reports {} after {command}", state.status);
+            ra_rpc::bail!(503, "QEMU reports {} after {command}", state.status);
         }
         Ok(())
     }
