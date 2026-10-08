@@ -1041,6 +1041,24 @@ impl VmmRpc for RpcHandler {
         Ok(())
     }
 
+    async fn pause_vm(self, request: Id) -> Result<()> {
+        info!(vm_id = %request.id, "pause_vm RPC called");
+        self.app
+            .pause_vm(&request.id)
+            .await
+            .context("Failed to pause VM")?;
+        Ok(())
+    }
+
+    async fn resume_vm(self, request: Id) -> Result<()> {
+        info!(vm_id = %request.id, "resume_vm RPC called");
+        self.app
+            .resume_vm(&request.id)
+            .await
+            .context("Failed to resume VM")?;
+        Ok(())
+    }
+
     async fn remove_vm(self, request: Id) -> Result<()> {
         info!(vm_id = %request.id, "remove_vm RPC called");
         self.app

@@ -411,6 +411,11 @@ service Vmm {
   rpc UpdateVm(UpdateVmRequest) returns (Id);
   // Shutdown a VM
   rpc ShutdownVm(Id) returns (google.protobuf.Empty);
+  // Pause a running VM in place (QMP stop): RAM stays committed, same host
+  // only. Needs the VMM's qmp_socket at the VM's launch.
+  rpc PauseVm(Id) returns (google.protobuf.Empty);
+  // Resume a paused VM (QMP cont).
+  rpc ResumeVm(Id) returns (google.protobuf.Empty);
   // RPC to resize a VM. Deprecated, use UpdateVm instead.
   rpc ResizeVm(ResizeVmRequest) returns (google.protobuf.Empty);
   // RPC to compute the compose hash, it's helpful for debugging & developing SDK.
