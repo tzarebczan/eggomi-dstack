@@ -73,7 +73,7 @@ fi
 for key in ACPI ACPI_TABLE_UPGRADE INTEL_TDX_GUEST TDX_GUEST_DRIVER \
  AMD_MEM_ENCRYPT SEV_GUEST TCG_TPM VIRTIO_PCI VIRTIO_NET BLK_DEV_NVME \
  DM_CRYPT DM_VERITY OVERLAY_FS CGROUPS USER_NS SECCOMP BPF_SYSCALL \
- NF_TABLES VSOCKETS HARDENED_USERCOPY; do
+ NF_TABLES VSOCKETS HARDENED_USERCOPY SECURITY_LANDLOCK SECURITY_YAMA; do
   grep -Eq "^CONFIG_${key}=(y|m)$" "$D/components/kernel/kernel.config" || { echo "missing CONFIG_$key"; exit 1; }
 done
 # The hardening baseline is owned by the production audit script; read the
